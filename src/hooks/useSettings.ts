@@ -5,7 +5,7 @@ import type { Settings } from "../types";
 import { DEFAULT_STEM_OPTIONS } from "../types";
 import { DEFAULT_FLAG_EXTRA_CHARS, DEFAULT_REPLACEMENTS } from "../lib/standardize";
 
-export const CURRENT_SETTINGS_VERSION = 18;
+export const CURRENT_SETTINGS_VERSION = 21;
 
 export const DEFAULT_SETTINGS: Settings = {
   aiBackend: "ollama",
@@ -37,6 +37,7 @@ export const DEFAULT_SETTINGS: Settings = {
   rekordboxXmlMtime: 0,
   keyNotation: "stored",
   libraryAutoRefresh: false,
+  aiControl: false,
   theme: "system",
   visibleColumns: [
     "preview",
@@ -227,6 +228,11 @@ export function migrate(s: Settings, savedVersion: number): Settings {
   // v18: collectionRoot, organizePattern, autoMoveOnSave, snapshotFolder,
   // snapshotOnExit, snapshotKeep. All filled in by the DEFAULT_SETTINGS merge,
   // so no data step is needed.
+  if (savedVersion < 21) {
+    // D1: aiControl (default off, filled in by the merge). Versions 19-20 are
+    // reserved by parallel branches (B3 takes 20); nothing to migrate here.
+    next.aiControl = false;
+  }
   next.settingsVersion = CURRENT_SETTINGS_VERSION;
   return next;
 }

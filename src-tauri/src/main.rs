@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod bridge;
 mod commands;
 mod models;
 
@@ -136,6 +137,7 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 if window.label() == "main" {
                     commands::organize::snapshot_on_exit(window.app_handle());
+                    bridge::shutdown(window.app_handle());
                 }
             }
         })
@@ -148,8 +150,12 @@ fn main() {
         })
         .manage(PendingOpen(Mutex::new(initial)))
         .manage(commands::ytmusic::EnrichCancelFlag::default())
+        .manage(bridge::BridgeState::default())
         .invoke_handler(tauri::generate_handler![
             take_opened_files,
+            bridge::bridge_set_enabled,
+            bridge::bridge_status,
+            bridge::bridge_respond,
             commands::files::scan_folder,
             commands::files::list_files,
             commands::files::import_paths,

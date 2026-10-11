@@ -45,6 +45,7 @@ import { Badge, Button, Card, CardHeader, Row, cn, inputClass, selectClass } fro
 import { Combobox } from "../components/Combobox";
 import { RekordboxMixxxExportDialog } from "../components/RekordboxMixxxExportDialog";
 import { OrganizeSettingsCard } from "../components/OrganizeSettingsCard";
+import { AiControlCard } from "../components/AiControlCard";
 import type { LibraryIndexApi } from "../hooks/useLibraryIndex";
 
 interface Props {
@@ -1623,6 +1624,8 @@ export function SettingsPage({
       </Card>
 
       <LibraryIndexCard settings={settings} onUpdate={onUpdate} libraryIndex={libraryIndex} notify={notify} />
+
+      <AiControlCard settings={settings} onUpdate={onUpdate} notify={notify} />
 
       <OrganizeSettingsCard
         settings={settings}

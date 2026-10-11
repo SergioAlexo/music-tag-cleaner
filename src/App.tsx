@@ -28,6 +28,8 @@ import { buildRekordboxSyncPreview } from "./lib/rekordboxSync";
 import { useTags } from "./hooks/useTags";
 import { OrganizeDialog, toOrganizeItem } from "./components/OrganizeDialog";
 import { LibraryPage } from "./pages/LibraryPage";
+import { ALL_COLUMNS } from "./components/TrackTable";
+import { useActionBridge } from "./hooks/useActionBridge";
 import { useGenreLoad } from "./hooks/useGenreLoad";
 import { describeRefresh, refreshChangedAnything } from "./lib/libraryRefresh";
 import { FACETS, matchesFacet, type Facet, type FacetPick } from "./lib/facets";
@@ -2145,6 +2147,77 @@ This rewrites the ${meta.singular} tag on ${
     const tags = libraryTags[file.path];
     if (tags) setInspected({ file, tags });
   };
+
+  // D1: expose the handlers above to the action registry / AI bridge (additive:
+  // the toolbar keeps calling them directly). See src/lib/appActions.ts.
+  useActionBridge(
+    {
+      page,
+      setPage,
+      busy: busy || filesApi.scanning,
+      settings,
+      columns: ALL_COLUMNS,
+      savePatch,
+      notify,
+      files: filesApi.files,
+      selectedPaths: filesApi.selectedPaths,
+      setSelection: (paths) => {
+        filesApi.setAll(false);
+        filesApi.setManySelected(paths, true);
+      },
+      importPaths: filesApi.importPaths,
+      readTags: tagsApi.read,
+      library: {
+        files: libraryIndex.files,
+        tags: libraryIndex.tags,
+        stats: libraryIndex.stats,
+        facets: libraryIndex.facets,
+        runIndex: libraryIndex.runIndex,
+      },
+      pending,
+      previewMode,
+      canUndo: history.canUndo,
+      canRedo: history.canRedo,
+      h: {
+        applyPending,
+        cancelPending: () => setPending(null),
+        undo: history.undo,
+        redo: history.redo,
+        capitalization: runCapitalizationOnly,
+        characterRules: runCharacterRules,
+        removeChars: runRemoveChars,
+        aiClean: runAIClean,
+        clearFields: runClearFields,
+        generateIds,
+        rekordboxToTags: runRekordboxToTags,
+        migrateTrackIds: runTrackIdMigration,
+        startUnify,
+        standardizeArtwork,
+        removeArt: removeArtForPaths,
+        standardizeContainers,
+        renameToStandard,
+        renameFile: renameSingleFile,
+        editField: (paths, field, value) => editField(paths, field as keyof TagData & string, value),
+        editRawField,
+        editRating,
+        deleteFile: (f) => deleteFile(f),
+        deleteDuplicates: deleteDuplicateFiles,
+        backup: runBackup,
+        restoreBackup,
+        backupArchive: runBackupArchive,
+        runConvert: (o) => runConvert(o as ConvertOptions),
+        openConvert: () => openConvert(),
+        openStems: () => openStems(),
+        openOrganize,
+        openFindArtwork: (paths) => setArtworkPaths(paths),
+        openJunkArt: () => setJunkArtOpen(true),
+        loadFacet: loadLibraryFacet,
+        showCompare: showHistoryCompare,
+      },
+    },
+    settings.aiControl,
+    loaded,
+  );
 
   // Keyboard shortcuts: customizable via settings.shortcuts (see lib/shortcuts.ts), Escape close.
   // The handler closes over state that changes constantly (busy, pending, …), so

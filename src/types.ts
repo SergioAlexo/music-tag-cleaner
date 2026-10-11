@@ -297,6 +297,8 @@ export interface Settings {
   keyNotation: KeyNotation;
   /** Re-run the incremental library scan whenever the window regains focus (at most once a minute). Off by default. */
   libraryAutoRefresh: boolean;
+  /** D1: run the local AI-control bridge (127.0.0.1 only, bearer token). Off by default. */
+  aiControl: boolean;
   /**
    * "system" follows the OS light/dark setting and is the default —
    * there is no in-app theme switcher any more. The explicit values are
