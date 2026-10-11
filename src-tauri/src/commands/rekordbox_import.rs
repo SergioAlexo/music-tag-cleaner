@@ -69,6 +69,9 @@ struct ParsedTrack {
     /// Rekordbox's `Tonality` attribute, e.g. "8A" or "Fm" — whatever key
     /// notation the user has Rekordbox set to export in. Not normalized here.
     tonality: Option<String>,
+    /// Stars 0-5 from the `Rating` attribute (0/51/102/153/204/255); `None`
+    /// when the attribute is absent or the track is unrated.
+    rating: Option<u8>,
     cues: CueData,
 }
 
@@ -144,6 +147,17 @@ fn attr_i32(e: &quick_xml::events::BytesStart, name: &str) -> Option<i32> {
     attr_str(e, name).and_then(|v| v.parse().ok())
 }
 
+/// Rekordbox's `Rating` attribute (0, 51, 102, 153, 204, 255) as 0-5 stars,
+/// `None` for unrated. Rounds to the nearest step so a hand-edited export
+/// (e.g. 200) still lands on a star; anything above 255 clamps to five.
+fn stars_from_rekordbox_rating(raw: i32) -> Option<u8> {
+    if raw <= 0 {
+        return None;
+    }
+    let stars = ((raw.min(255) + 25) / 51).clamp(1, 5);
+    Some(stars as u8)
+}
+
 /// Reads the plain (non-cue) fields off a `<TRACK>`'s attributes — shared by
 /// the `Start` (has cue children) and `Empty` (self-closed, no children,
 /// e.g. a track with no memory/hot cues) cases below.
@@ -157,6 +171,7 @@ fn track_from_attrs(e: &quick_xml::events::BytesStart) -> ParsedTrack {
         total_time_secs: attr_i32(e, "TotalTime").map(|v| v as i64),
         average_bpm: attr_f64(e, "AverageBpm"),
         tonality: attr_str(e, "Tonality").filter(|v| !v.is_empty()),
+        rating: attr_i32(e, "Rating").and_then(stars_from_rekordbox_rating),
         cues: CueData::default(),
     }
 }
@@ -647,6 +662,72 @@ fn normalize_path_for_join(path: &str) -> String {
     path.to_ascii_lowercase()
 }
 
+/// `rekordbox_track` predates ratings; a database created by an older build
+/// lacks the column (CREATE TABLE IF NOT EXISTS leaves it alone).
+fn ensure_rating_column(conn: &rusqlite::Connection) -> Result<(), String> {
+    let has: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('rekordbox_track') WHERE name = 'rating'")
+        .and_then(|mut s| s.exists([]))
+        .map_err(|e| e.to_string())?;
+    if !has {
+        conn.execute("ALTER TABLE rekordbox_track ADD COLUMN rating INTEGER", [])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// What the last imported rekordbox.xml says about one file.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RekordboxEntry {
+    pub path: String,
+    pub bpm: Option<f64>,
+    pub key: Option<String>,
+    /// Stars 0-5; `None` when unrated in Rekordbox.
+    pub rating: Option<u8>,
+}
+
+fn rekordbox_lookup_blocking(conn: &rusqlite::Connection, paths: &[String]) -> Result<Vec<RekordboxEntry>, String> {
+    ensure_rating_column(conn)?;
+    let mut stmt = conn
+        .prepare_cached("SELECT bpm, key, rating FROM rekordbox_track WHERE path_lower = ?1")
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for p in paths {
+        let row = stmt
+            .query_row(params![normalize_path_for_join(p)], |r| {
+                Ok((
+                    r.get::<_, Option<f64>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                ))
+            })
+            .ok();
+        if let Some((bpm, key, rating)) = row {
+            out.push(RekordboxEntry {
+                path: p.clone(),
+                bpm,
+                key,
+                rating: rating.filter(|r| *r > 0).map(|r| r as u8),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Rekordbox's BPM / key / rating for the given file paths (only those the
+/// last imported rekordbox.xml knows about). Read-only; works for any loaded
+/// file, not just ones under a Library root.
+#[tauri::command]
+pub async fn rekordbox_lookup(app: AppHandle, paths: Vec<String>) -> Result<Vec<RekordboxEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = super::library_index::open_db(&app)?;
+        rekordbox_lookup_blocking(&conn, &paths)
+    })
+    .await
+    .map_err(|_| "Rekordbox lookup task panicked".to_string())?
+}
+
 fn import_rekordbox_library_tags_blocking(
     app: &AppHandle,
     xml_path: &str,
@@ -656,6 +737,7 @@ fn import_rekordbox_library_tags_blocking(
 
     // `open_db` runs the shared schema, which already includes `rekordbox_track`.
     let conn = super::library_index::open_db(app)?;
+    ensure_rating_column(&conn)?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -665,12 +747,21 @@ fn import_rekordbox_library_tags_blocking(
     conn.execute("DELETE FROM rekordbox_track", [])
         .map_err(|e| e.to_string())?;
     for t in &tracks {
-        if t.location.is_empty() || (t.average_bpm.is_none() && t.tonality.is_none()) {
+        if t.location.is_empty()
+            || (t.average_bpm.is_none() && t.tonality.is_none() && t.rating.is_none())
+        {
             continue;
         }
         conn.execute(
-            "INSERT OR REPLACE INTO rekordbox_track (path_lower, bpm, key, imported_at) VALUES (?1, ?2, ?3, ?4)",
-            params![normalize_path_for_join(&t.location), t.average_bpm, t.tonality, now],
+            "INSERT OR REPLACE INTO rekordbox_track (path_lower, bpm, key, rating, imported_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                normalize_path_for_join(&t.location),
+                // Rekordbox writes AverageBpm="0.00" for unanalysed tracks.
+                t.average_bpm.filter(|b| *b > 0.0),
+                t.tonality,
+                t.rating.map(|r| r as i64),
+                now
+            ],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -1002,6 +1093,54 @@ mod tests {
         assert_eq!(friday_tracks, &vec![3]);
 
         std::fs::remove_dir_all(xml_path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn rekordbox_ratings_map_to_stars() {
+        for (raw, stars) in [(0, None), (51, Some(1)), (102, Some(2)), (153, Some(3)), (204, Some(4)), (255, Some(5)), (200, Some(4)), (999, Some(5)), (-3, None)] {
+            assert_eq!(stars_from_rekordbox_rating(raw), stars, "raw {raw}");
+        }
+    }
+
+    #[test]
+    fn parses_rating_bpm_and_key_from_track_attributes() {
+        let dir = std::env::temp_dir().join(format!("mtc-rbxml-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let xml = dir.join("rb.xml");
+        std::fs::write(
+            &xml,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<DJ_PLAYLISTS Version="1.0.0"><COLLECTION Entries="3">
+<TRACK TrackID="1" Name="A" Artist="X" TotalTime="200" AverageBpm="127.99" Tonality="8A" Rating="204" Location="file://localhost/C:/Music/a.mp3"/>
+<TRACK TrackID="2" Name="B" Artist="Y" TotalTime="200" AverageBpm="0.00" Rating="0" Location="file://localhost/C:/Music/b.mp3"><TEMPO Inizio="0.0" Bpm="120" Metro="4/4" Battito="1"/></TRACK>
+<TRACK TrackID="3" Name="C" Artist="Z" TotalTime="200" Rating="51" Location="file://localhost/C:/Music/c.mp3"/>
+</COLLECTION></DJ_PLAYLISTS>"#,
+        )
+        .unwrap();
+        let tracks = parse_rekordbox_xml(xml.to_str().unwrap()).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(tracks.len(), 3);
+        assert_eq!((tracks[0].rating, tracks[0].tonality.as_deref()), (Some(4), Some("8A")));
+        assert_eq!(tracks[1].rating, None);
+        assert_eq!(tracks[2].rating, Some(1));
+    }
+
+    #[test]
+    fn lookup_adds_the_rating_column_to_an_old_table_and_matches_case_insensitively() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // The table exactly as v0.15-v0.18 created it: no rating column.
+        conn.execute_batch(
+            "CREATE TABLE rekordbox_track (path_lower TEXT PRIMARY KEY, bpm REAL, key TEXT, imported_at INTEGER NOT NULL);
+             INSERT INTO rekordbox_track VALUES ('c:\\music\\a.mp3', 128.0, '8A', 1);",
+        )
+        .unwrap();
+        ensure_rating_column(&conn).unwrap();
+        conn.execute("UPDATE rekordbox_track SET rating = 4", []).unwrap();
+        let got = rekordbox_lookup_blocking(&conn, &["C:\\Music\\A.mp3".into(), "C:\\nope.mp3".into()]).unwrap();
+        assert_eq!(
+            got,
+            vec![RekordboxEntry { path: "C:\\Music\\A.mp3".into(), bpm: Some(128.0), key: Some("8A".into()), rating: Some(4) }]
+        );
     }
 
     #[test]

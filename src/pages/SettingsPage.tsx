@@ -477,6 +477,25 @@ function LibraryIndexCard({
 
         <div className="mt-3 border-t pt-3">
           <Row
+            label="Key notation"
+            hint="How the Key column is displayed. Files are never changed by this; &quot;as stored&quot; shows the tag exactly as written."
+          >
+            <select
+              className={cn(selectClass, "w-44")}
+              value={settings.keyNotation}
+              onChange={(e) =>
+                onUpdate((prev) => ({ ...prev, keyNotation: e.target.value as Settings["keyNotation"] }))
+              }
+            >
+              <option value="stored">As stored</option>
+              <option value="camelot">Camelot (8A)</option>
+              <option value="openkey">Open Key (1m)</option>
+            </select>
+          </Row>
+        </div>
+
+        <div className="mt-3 border-t pt-3">
+          <Row
             label="Genre click in a hand-built batch"
             hint="What clicking a genre in the Library sidebar does when you loaded the files yourself (folder, files, drop). Empty and genre sessions always just open the genre."
           >
@@ -499,10 +518,11 @@ function LibraryIndexCard({
         </div>
 
         <div className="mt-3 border-t pt-3">
-          <div className="mb-1 text-sm font-medium">Rekordbox BPM/Key</div>
+          <div className="mb-1 text-sm font-medium">Rekordbox BPM / Key / Rating</div>
           <p className="mb-2 text-xs text-muted-foreground">
-            Rekordbox's own BPM/key analysis, read from a collection export — in Rekordbox:
-            File → Export Collection in xml format.
+            Rekordbox's own BPM/key analysis and star ratings, read from a collection export — in
+            Rekordbox: File → Export Collection in xml format. They show in the table (marked RB)
+            where a file has no tag of its own; "Rekordbox → tags" writes them into the files.
           </p>
           <div className="mb-2 flex items-center gap-2">
             {settings.rekordboxXmlPath ? (

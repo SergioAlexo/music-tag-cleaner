@@ -13,6 +13,8 @@ export interface AudioFile {
    * until that's been run, and only ever present on a Library track. */
   bpm?: number;
   key?: string;
+  /** Rekordbox's star rating (0-5) for this file, same source as bpm/key. */
+  rbRating?: number;
 }
 
 export interface TagData {
@@ -31,6 +33,10 @@ export interface TagData {
   trackId?: string;
   /** Rating in stars, 0-5. */
   rating?: number;
+  /** Tempo as written in the file (TBPM / tmpo / BPM), text so "127.99" stays exact. */
+  bpm?: string;
+  /** Musical key as written in the file (TKEY / INITIALKEY), in the writer's notation. */
+  key?: string;
   hasCoverArt: boolean;
   /** Full dump of every text field, keyed by canonical lofty key name. */
   allFields: Record<string, string>;
@@ -276,6 +282,8 @@ export interface Settings {
   /** The XML file's mtime (Unix seconds) as of the last successful import,
    * so launch can re-import only when the export actually changed. */
   rekordboxXmlMtime: number;
+  /** How the Key column is shown: as stored in the file/Rekordbox, Camelot (8A) or Open Key (3m). */
+  keyNotation: KeyNotation;
   /**
    * "system" follows the OS light/dark setting and is the default —
    * there is no in-app theme switcher any more. The explicit values are
@@ -349,7 +357,15 @@ export const TRANSLITERATE_SCRIPTS = [
   { id: "Chinese/Japanese/Korean", label: "Chinese / Japanese / Korean", hint: "" },
 ] as const;
 
-export type PreviewMode = "ai" | "standardize" | "clear" | "history" | "trackIdMigration";
+export type PreviewMode =
+  | "ai"
+  | "standardize"
+  | "clear"
+  | "history"
+  | "trackIdMigration"
+  | "rekordboxSync";
+
+export type KeyNotation = "stored" | "camelot" | "openkey";
 
 /** Fields the Clear Fields action can target. */
 export const CLEARABLE_FIELDS = [
@@ -408,6 +424,14 @@ export const KEPT_FIELD_KEYS = new Set([
   // Private app-assigned track id — surfaced as its own "Track ID" column,
   // so it must not also appear as a raw "All Tags" column or a strip removal.
   "Unknown(TRACKID)",
+  // BPM / Key have their own curated columns (and survive a strip).
+  "Bpm",
+  "IntegerBpm",
+  "InitialKey",
+  // Format-specific spellings of Track ID / Original Artist (see KEPT_FIELD_KEYS in library_index.rs).
+  "Unknown(ORIGINALARTIST)",
+  "Unknown(----:com.apple.iTunes:TRACKID)",
+  "Unknown(----:com.apple.iTunes:ORIGINALARTIST)",
 ]);
 
 export const FIELD_LABELS: Record<string, string> = {
@@ -424,6 +448,8 @@ export const FIELD_LABELS: Record<string, string> = {
   composer: "Composer",
   originalArtist: "Original Artist",
   rating: "Rating",
+  bpm: "BPM",
+  key: "Key",
 };
 
 // v0.9 F5 — Rekordbox cue import. Field names are camelCase to match the

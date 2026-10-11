@@ -36,6 +36,12 @@ pub struct TagData {
     pub track_id: Option<String>,
     /// Rating in stars, 0-5 (mapped from the POPM/rating byte).
     pub rating: Option<u8>,
+    /// Tempo as written in the file (TBPM / `tmpo` / Vorbis `BPM`), kept as
+    /// text so a decimal such as "127.99" shows exactly as stored.
+    pub bpm: Option<String>,
+    /// Musical key as written in the file (TKEY / `initialkey` / `INITIALKEY`),
+    /// in whatever notation the writing app used ("8A", "Am", "Fm"...).
+    pub key: Option<String>,
     pub has_cover_art: bool,
     /// Full dump of every text field in the tag, keyed by a canonical
     /// (format-independent) name like `TrackTitle` or `Unknown(FOO)`.

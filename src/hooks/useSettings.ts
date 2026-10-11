@@ -5,7 +5,7 @@ import type { Settings } from "../types";
 import { DEFAULT_STEM_OPTIONS } from "../types";
 import { DEFAULT_FLAG_EXTRA_CHARS, DEFAULT_REPLACEMENTS } from "../lib/standardize";
 
-export const CURRENT_SETTINGS_VERSION = 15;
+export const CURRENT_SETTINGS_VERSION = 16;
 
 export const DEFAULT_SETTINGS: Settings = {
   aiBackend: "ollama",
@@ -29,6 +29,7 @@ export const DEFAULT_SETTINGS: Settings = {
   libraryFolder: "",
   rekordboxXmlPath: "",
   rekordboxXmlMtime: 0,
+  keyNotation: "stored",
   theme: "system",
   visibleColumns: [
     "preview",
@@ -39,6 +40,8 @@ export const DEFAULT_SETTINGS: Settings = {
     "year",
     "genre",
     "rating",
+    "bpm",
+    "key",
     "trackNumber",
     "trackId",
   ],
@@ -132,6 +135,9 @@ export function mergeWithDefaults(saved: Partial<Settings>): Settings {
  * remembered rekordbox.xml mtime so the next launch re-imports BPM/key once:
  * rows for paths with a non-ASCII capital (Cyrillic, É, Ü…) were stored under
  * a key the library join could never match, and only a re-import rewrites them.
+ * v16 adds `keyNotation` (filled in by the merge), puts the BPM and Key columns
+ * on by default, and forgets the rekordbox.xml mtime once more: imports made
+ * before v16 stored no Rating, and only a re-import reads it.
  */
 export function migrate(s: Settings, savedVersion: number): Settings {
   const next = { ...s };
@@ -194,6 +200,19 @@ export function migrate(s: Settings, savedVersion: number): Settings {
   }
   if (savedVersion < 15) {
     next.rekordboxXmlMtime = 0;
+  }
+  if (savedVersion < 16) {
+    next.rekordboxXmlMtime = 0;
+    const cols = [...next.visibleColumns];
+    // After Rating (or Genre), where a DJ reads them; never reorders a
+    // column the user already placed.
+    let at = cols.indexOf("rating");
+    if (at < 0) at = cols.indexOf("genre");
+    for (const id of ["bpm", "key"]) {
+      if (cols.includes(id)) continue;
+      cols.splice(at >= 0 ? ++at : cols.length, 0, id);
+    }
+    next.visibleColumns = cols;
   }
   next.settingsVersion = CURRENT_SETTINGS_VERSION;
   return next;
