@@ -11,6 +11,8 @@ import {
   History,
   Import,
   ImageDown,
+  Image as ImageIcon,
+  ScanSearch,
   RotateCcw,
   RotateCw,
   Sparkles,
@@ -132,6 +134,8 @@ interface Props {
   onSeparateStems: () => void;
   onConvertFile: (file: AudioFile) => void;
   onStandardizeArt: () => void;
+  onFindArtwork: (paths: string[]) => void;
+  onJunkArt: () => void;
   /** Moves every selected track's tags into its format's canonical container. */
   onStandardizeContainers: () => void;
   onRename: () => void;
@@ -216,6 +220,8 @@ export function LibraryPage({
   onSeparateStems,
   onConvertFile,
   onStandardizeArt,
+  onFindArtwork,
+  onJunkArt,
   onStandardizeContainers,
   onRename,
   onClearFields,
@@ -660,6 +666,25 @@ export function LibraryPage({
           <Button
             variant="secondary"
             size="sm"
+            onClick={() => onFindArtwork(filesApi.selectedPaths)}
+            disabled={noSel}
+            title="Look up proper cover art (MusicBrainz, iTunes, Deezer) for the selected tracks"
+          >
+            <ImageIcon />
+            Find Art
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={onJunkArt}
+            title="Find the same cover repeated across unrelated artists (DJ-pool logos) and placeholder art"
+          >
+            <ScanSearch />
+            Junk Art
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={onStandardizeContainers}
             disabled={noSel}
             title="Move each track's tags into the one container its format calls standard — ID3v2 for mp3/wav/aiff, Vorbis Comments for flac/ogg, MP4 atoms for m4a/aac — and drop the leftovers (ID3v1, APE). Values are moved, not changed."
@@ -747,6 +772,7 @@ export function LibraryPage({
               onAddGenre={onAddGenre}
               onRenameGenre={onRenameGenre}
               onConvertFile={onConvertFile}
+              onFindArtwork={onFindArtwork}
               trackIdFormats={tidFormats}
               onDeleteFile={onDeleteFile}
               onRenameFile={onRenameFile}

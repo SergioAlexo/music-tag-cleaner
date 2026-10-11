@@ -1214,6 +1214,8 @@ mod tests {
     #[test]
     #[ignore]
     fn mb_live_finds_cover_for_known_track() {
+        // The app gets its provider from the updater plugin; a bare test must install one.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let dir = std::env::temp_dir().join(format!("mtc-art-live-{}", std::process::id()));

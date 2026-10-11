@@ -245,6 +245,7 @@ interface Props {
   onRenameFile: (path: string, newStem: string) => void;
   /** Open the Convert dialog for one right-clicked file. */
   onConvertFile?: (file: AudioFile) => void;
+  onFindArtwork?: (paths: string[]) => void;
   /** Track ID → distinct loaded formats, for the "also loaded as" link badge. */
   trackIdFormats?: Map<string, string[]>;
   /** Column id of the field currently holding the searchable backup, if enabled. */
@@ -434,6 +435,7 @@ export function TrackTable({
   onDeleteFile,
   onRenameFile,
   onConvertFile,
+  onFindArtwork,
   trackIdFormats,
   backupFieldId,
   shortcuts,
@@ -2330,6 +2332,13 @@ export function TrackTable({
             if (onConvertFile) {
               items.push(null, { icon: Repeat, label: "Convert…", run: () => onConvertFile(first) });
             }
+          }
+          if (onFindArtwork) {
+            items.push(null, {
+              icon: ImagePlus,
+              label: n > 1 ? `Find artwork for ${n}…` : "Find artwork…",
+              run: () => onFindArtwork(menu.paths),
+            });
           }
           items.push(null, {
             icon: Trash2,
