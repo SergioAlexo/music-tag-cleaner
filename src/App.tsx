@@ -2307,6 +2307,8 @@ This rewrites the ${meta.singular} tag on ${
         openJunkArt: () => setJunkArtOpen(true),
         loadFacet: loadLibraryFacet,
         showCompare: showHistoryCompare,
+        fetchLyrics: runFetchLyrics,
+        detectLanguage: runDetectLanguage,
       },
     },
     settings.aiControl,

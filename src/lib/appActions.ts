@@ -94,6 +94,8 @@ export interface AppEnv {
     openJunkArt: () => void;
     loadFacet: (pick: FacetPick) => Promise<unknown> | void;
     showCompare: () => void;
+    fetchLyrics: (paths: string[]) => Promise<unknown> | void;
+    detectLanguage: (paths: string[]) => Promise<unknown> | void;
   };
 }
 
@@ -123,7 +125,7 @@ export function publicSettings(s: Settings): Record<string, unknown> {
 
 const TAG_FIELDS = [
   "title", "artist", "album", "albumArtist", "trackNumber", "discNumber", "year", "genre",
-  "comment", "composer", "originalArtist", "trackId", "bpm", "key",
+  "comment", "composer", "originalArtist", "trackId", "bpm", "key", "language",
 ];
 
 export function registerAppActions(reg: ActionRegistry, get: () => AppEnv): void {
@@ -282,13 +284,13 @@ export function registerAppActions(reg: ActionRegistry, get: () => AppEnv): void
     title: "Load a genre or album as the working batch",
     params: obj(
       {
-        facet: { type: "string", enum: ["genre", "album"] },
+        facet: { type: "string", enum: ["genre", "album", "language"] },
         name: str("Genre/album name; empty string loads the 'No genre / No album' bucket"),
         artist: str("Album artist (albums only)"),
       },
       ["facet", "name"],
     ),
-    run: async (p: { facet: "genre" | "album"; name: string; artist?: string }) => {
+    run: async (p: { facet: FacetPick["facet"]; name: string; artist?: string }) => {
       await env().h.loadFacet({ facet: p.facet, name: p.name, artist: p.artist ?? "" });
       await reg.settle();
       return { sessionTracks: env().files.length };
@@ -779,6 +781,31 @@ export function registerAppActions(reg: ActionRegistry, get: () => AppEnv): void
     run: async (p: { paths: string[] }) => {
       await withSelection(p.paths, () => env().h.openStems());
       return { dialogOpened: true };
+    },
+  });
+
+  reg.register({
+    id: "lyrics.fetch",
+    title: "Fetch lyrics (LRCLIB)",
+    description: "Looks up lyrics online and stores them per the 'Store fetched lyrics' setting (sidecar .lrc/.txt by default). Needs internet.",
+    params: obj({ paths: paths() }, ["paths"]),
+    run: async (p: { paths: string[] }) => {
+      loaded(p.paths);
+      await env().h.fetchLyrics(p.paths);
+      return { done: true };
+    },
+  });
+
+  reg.register({
+    id: "language.detect",
+    title: "Preview language detection",
+    description: "Guesses each track's language (offline) and builds a preview of Language tag changes; apply with changes.apply.",
+    params: obj({ paths: paths() }, ["paths"]),
+    run: async (p: { paths: string[] }) => {
+      loaded(p.paths);
+      await env().h.detectLanguage(p.paths);
+      await reg.settle();
+      return { previewBuilt: !!env().pending, rows: env().pending?.filter((r) => r.changed).length ?? 0 };
     },
   });
 
