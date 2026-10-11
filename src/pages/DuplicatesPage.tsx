@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { Notify } from "../hooks/useFiles";
 import { listen } from "@tauri-apps/api/event";
-import { AlertTriangle, Copy, Loader2, Play, Square, Trash2, Wand2 } from "lucide-react";
+import { AlertTriangle, Copy, FolderSearch, Loader2, Music, Play, Square, Trash2, Wand2 } from "lucide-react";
+import { TrackContextMenu, trackMenuItems, useTrackContextMenu } from "../components/TrackContextMenu";
+import type { MenuEntry } from "../components/TrackContextMenu";
 import type { AudioFile, DuplicateGroup, TagData } from "../types";
 import { formatBytes } from "../types";
 import { Button, Card, cn } from "../components/ui";
@@ -10,7 +12,62 @@ import { COMPLETENESS_FIELDS, suggestKeeper, suggestReason, tagCompleteness } fr
 import { Waveform } from "../components/Waveform";
 import { formatDuration, releasePlayback, takeOverPlayback } from "../components/AudioPreview";
 
-type RowState = "keep" | "remove" | "skip";
+/** Undecided rows have no entry at all, so nothing is removed until the user chooses. */
+type RowState = "keep" | "remove";
+
+/** Thumbnails by path; null = loaded, no art. Module-level so re-scans and
+ * remounts don't refetch. */
+const thumbCache = new Map<string, string | null>();
+
+/**
+ * Small cover thumbnail that only loads once scrolled into view, so a scan
+ * with hundreds of rows doesn't fire hundreds of `read_cover_thumbnail` calls.
+ */
+function RowCover({ path }: { path: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [src, setSrc] = useState<string | null | undefined>(thumbCache.get(path));
+
+  useEffect(() => {
+    if (thumbCache.has(path)) {
+      setSrc(thumbCache.get(path));
+      return;
+    }
+    const el = ref.current;
+    if (!el) return;
+    let cancelled = false;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((e) => e.isIntersecting)) return;
+        io.disconnect();
+        invoke<string | null>("read_cover_thumbnail", { path, size: 72 })
+          .catch(() => null)
+          .then((url) => {
+            thumbCache.set(path, url);
+            if (!cancelled) setSrc(url);
+          });
+      },
+      { rootMargin: "200px" },
+    );
+    io.observe(el);
+    return () => {
+      cancelled = true;
+      io.disconnect();
+    };
+  }, [path]);
+
+  return (
+    <div
+      ref={ref}
+      className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded bg-secondary text-muted-foreground"
+    >
+      {src ? (
+        <img src={src} alt="" className="h-full w-full object-cover" draggable={false} />
+      ) : (
+        <Music className="h-4 w-4 opacity-50" />
+      )}
+    </div>
+  );
+}
 
 function fileFacts(f: AudioFile | undefined, t: TagData | undefined): string {
   if (!f) return "file no longer loaded";
@@ -32,13 +89,17 @@ export function DuplicatesPage({
   notify,
   onDelete,
   onInspect,
+  onShowInLibrary,
 }: {
   files: AudioFile[];
   tags: Record<string, TagData>;
   notify: Notify;
   onDelete: (paths: string[]) => Promise<boolean>;
   onInspect: (path: string) => void;
+  onShowInLibrary: (path: string) => void;
 }) {
+  const { menu, openMenu, closeMenu } = useTrackContextMenu();
+  const [menuPath, setMenuPath] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number; phase: string } | null>(null);
   const [groups, setGroups] = useState<DuplicateGroup[] | null>(null);
@@ -164,18 +225,16 @@ export function DuplicatesPage({
       });
       unloadAudio();
       setGroups(result);
-      // Every row starts at Skip so nothing is marked for removal until the user
-      // clicks. The ranking still runs: for "duplicate" groups the suggested
-      // keeper is Keep and the rest Remove, shown as a faint hint. "alternate"
-      // groups (different edits, not duplicates) get no suggestion at all.
-      const initial: Record<string, RowState> = {};
+      // Every row starts undecided (no entry) so nothing is marked for removal
+      // until the user clicks. The ranking still runs: for "duplicate" groups the
+      // suggested keeper is Keep and the rest Remove, shown as a faint hint.
+      // "alternate" groups (different edits, not duplicates) get no suggestion.
       const sugg: Record<string, "keep" | "remove"> = {};
       for (const g of result) {
-        for (const p of g.paths) initial[p] = "skip";
         if (g.kind === "alternate") continue;
         Object.assign(sugg, suggestGroup(g.paths));
       }
-      setRowStates(initial);
+      setRowStates({});
       setSuggestions(sugg);
       if (!result.length) notify("No duplicates found", "success");
     } catch (e) {
@@ -185,6 +244,26 @@ export function DuplicatesPage({
       setProgress(null);
       unlisten();
     }
+  };
+
+  const copyTrackId = (id: string) => {
+    navigator.clipboard.writeText(id).then(
+      () => notify("Copied Track ID", "success"),
+      (e) => notify(String(e), "error"),
+    );
+  };
+
+  const menuItems = (p: string): MenuEntry[] => {
+    const id = tags[p]?.trackId;
+    const base = trackMenuItems({ paths: [p], onInspect });
+    // Library jump first; Open / Reveal / Copy path / Inspect come from the shared list.
+    const items: MenuEntry[] = [
+      { icon: FolderSearch, label: "Show in Library", run: () => onShowInLibrary(p) },
+      null,
+      ...base,
+    ];
+    if (id) items.push({ icon: Copy, label: "Copy Track ID", run: () => copyTrackId(id) });
+    return items;
   };
 
   const playDur = dur || (playingPath ? fileByPath[playingPath]?.durationSecs ?? 0 : 0);
@@ -233,6 +312,16 @@ export function DuplicatesPage({
         onLoadedMetadata={(e) => setDur(e.currentTarget.duration)}
         onEnded={stopPlayback}
       />
+      {menu && menuPath && (
+        <TrackContextMenu
+          menu={menu}
+          items={menuItems(menuPath)}
+          onRun={(fn) => {
+            closeMenu();
+            Promise.resolve(fn()).catch((e) => notify(String(e), "error"));
+          }}
+        />
+      )}
       <div className="flex items-end justify-between gap-4">
         <div className="min-w-0">
           <h1 className="text-xl font-bold">Duplicates</h1>
@@ -298,9 +387,19 @@ export function DuplicatesPage({
                 <div className="space-y-1.5">
                   {g.paths.map((p) => {
                     const f = fileByPath[p];
-                    const state = rowStates[p] ?? "skip";
+                    const state = rowStates[p];
+                    const trackId = tags[p]?.trackId;
                     return (
-                      <div key={p} className="rounded-md px-2 py-1.5 hover:bg-accent/40">
+                      <div
+                        key={p}
+                        className="flex items-start gap-2 rounded-md px-2 py-1.5 hover:bg-accent/40"
+                        onContextMenu={(e) => {
+                          setMenuPath(p);
+                          openMenu(e, [p]);
+                        }}
+                      >
+                        <RowCover path={p} />
+                        <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
                           <button
                             className="min-w-0 flex-1 truncate text-left text-sm"
@@ -310,19 +409,34 @@ export function DuplicatesPage({
                             {f?.filename ?? p}
                             <span className="ml-2 text-xs text-muted-foreground">{fileFacts(f, tags[p])}</span>
                           </button>
+                          {trackId && (
+                            <button
+                              className="shrink-0 rounded border border-input bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground hover:bg-accent"
+                              title="Copy Track ID"
+                              onClick={() => copyTrackId(trackId)}
+                            >
+                              {trackId}
+                            </button>
+                          )}
                           <div className="flex shrink-0 gap-1">
-                            {(["keep", "remove", "skip"] as const).map((s) => (
+                            {(["keep", "remove"] as const).map((s) => (
                               <button
                                 key={s}
-                                onClick={() => setRowStates((prev) => ({ ...prev, [p]: s }))}
+                                // Clicking the active button again un-sets it (undecided).
+                                onClick={() =>
+                                  setRowStates((prev) => {
+                                    const next = { ...prev };
+                                    if (next[p] === s) delete next[p];
+                                    else next[p] = s;
+                                    return next;
+                                  })
+                                }
                                 className={cn(
                                   "rounded-md border px-2 py-1 text-xs font-medium capitalize",
                                   state === s
                                     ? s === "remove"
                                       ? "border-destructive bg-destructive text-destructive-foreground"
-                                      : s === "keep"
-                                        ? "border-emerald-600 bg-emerald-600 text-white"
-                                        : "border-primary bg-primary text-primary-foreground"
+                                      : "border-emerald-600 bg-emerald-600 text-white"
                                     : suggestions[p] === s
                                       ? s === "keep"
                                         ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600/70 dark:text-emerald-400/70"
@@ -351,11 +465,14 @@ export function DuplicatesPage({
                             onSeek={(fr) => playAt(p, fr)}
                             progress={playingPath === p && playDur ? time / playDur : undefined}
                           />
-                          {playingPath === p && (
-                            <span className="w-20 shrink-0 text-right font-mono text-[11px] text-muted-foreground">
-                              {formatDuration(time)} / {formatDuration(playDur)}
-                            </span>
-                          )}
+                          {/* Fixed-width slot, always rendered, so the waveform never
+                              resizes when playback starts or stops. */}
+                          <span className="w-[13ch] shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+                            {playingPath === p
+                              ? `${formatDuration(time)} / ${formatDuration(playDur)}`
+                              : `0:00 / ${formatDuration(f?.durationSecs ?? 0)}`}
+                          </span>
+                        </div>
                         </div>
                       </div>
                     );

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { onFocusPathRequest, takeFocusPath } from "../lib/focusPath";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { TrackContextMenu, trackMenuItems, useTrackContextMenu, type MenuEntry } from "./TrackContextMenu";
 import {
@@ -1085,6 +1086,24 @@ export function TrackTable({
     const idx = rows.findIndex((r) => r.path === searchMatches[next]);
     if (idx >= 0) virtual.scrollToIndex(idx);
   };
+
+  // "Show in Library" from another page: highlight + scroll to the requested
+  // file. Re-runs every render so a request that arrived before the table had
+  // its rows is still honoured; a file hidden by the current filters isn't
+  // found and the request is dropped.
+  useEffect(() => {
+    const apply = () => {
+      const p = takeFocusPath();
+      if (!p) return;
+      const idx = rows.findIndex((r) => r.path === p);
+      if (idx < 0) return;
+      setAnchorPath(p);
+      setRowSel(new Set([p]));
+      virtual.scrollToIndex(idx);
+    };
+    apply();
+    return onFocusPathRequest(apply);
+  });
 
   /** Pending AI/Standardize/Genre/Clear changes, keyed by "path::field" for O(1) cell lookup. */
   const pendingByKey = useMemo(() => {
