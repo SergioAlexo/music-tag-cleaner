@@ -46,6 +46,14 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 tiny_http = "0.12"
 getrandom = "0.3"
 whatlang = "0.18.0"
+# SQLCipher 4 page decryption for Rekordbox master.db, in pure Rust. The
+# bundled-sqlcipher features need Perl+OpenSSL to build and would replace the
+# plain SQLite every other database here uses (see plans/v0.19/notes/C1.md).
+aes = "0.8"
+cbc = "0.1"
+hmac = "0.12"
+sha2 = "0.10"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 
 # Windows-only: raw volume access for the FAT32 formatter. Pinned to the same
 # major as the copy Tauri already pulls in, so the tree carries one `windows`.
@@ -67,3 +75,16 @@ windows = { version = "0.62", features = [
 strip = true
 lto = true
 codegen-units = 1
+
+# SQLCipher's 256,000-iteration PBKDF2 is far too slow unoptimised; keep just
+# the crypto crates optimised in dev/test builds.
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.hmac]
+opt-level = 3
+[profile.dev.package.aes]
+opt-level = 3
+[profile.dev.package.cbc]
+opt-level = 3

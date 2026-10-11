@@ -80,6 +80,9 @@ const ComponentsPage = lazy(() =>
 const DuplicatesPage = lazy(() =>
   import("./pages/DuplicatesPage").then((m) => ({ default: m.DuplicatesPage })),
 );
+const PlaylistsPage = lazy(() =>
+  import("./pages/PlaylistsPage").then((m) => ({ default: m.PlaylistsPage })),
+);
 const YtMusicImportPage = lazy(() =>
   import("./pages/YtMusicImportPage").then((m) => ({ default: m.YtMusicImportPage })),
 );
@@ -416,6 +419,13 @@ export default function App() {
   // The three ways a library genre / album click can land (the page picks which).
   const loadLibraryFacet = async (pick: FacetPick) => {
     if (await releasePreview()) await genreLoad.loadFacet(pick);
+  };
+  // Playlists page -> "Load as session": a new tab holding the playlist's tracks.
+  const loadPlaylistSession = async (paths: string[]) => {
+    if (await sessionTabs.openNewTab()) {
+      setPage("library");
+      await genreLoad.addTracks(paths);
+    }
   };
   const openFacetInNewTab = async (pick: FacetPick) => {
     if (await sessionTabs.openNewTab()) await genreLoad.loadFacet(pick);
@@ -2478,6 +2488,12 @@ This rewrites the ${meta.singular} tag on ${
                 const file = filesApi.files.find((f) => f.path === path);
                 if (file) inspect(file);
               }}
+            />
+          ) : page === "playlists" ? (
+            <PlaylistsPage
+              notify={notify}
+              keyNotation={settings.keyNotation}
+              onLoadSession={(paths) => void loadPlaylistSession(paths)}
             />
           ) : page === "ytmusic" ? (
             <YtMusicImportPage
