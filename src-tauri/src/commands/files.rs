@@ -1673,6 +1673,57 @@ fn recompress_cover(
     }))
 }
 
+/// Embeds downloaded artwork as the file's sole cover, scaled/re-encoded to the
+/// user's artwork target, and returns the before/after pair for undo history.
+/// Unlike `standardize_artwork` it always writes (the point is to replace the
+/// picture), falling back to the untouched bytes when a re-encode would not
+/// shrink an already-small JPEG.
+pub(crate) fn apply_cover_bytes(
+    path: &str,
+    bytes: Vec<u8>,
+    max_dim: u32,
+    quality: u8,
+) -> Result<crate::models::ArtworkChange, String> {
+    use base64::Engine;
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+
+    let before = {
+        let tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
+        tagged
+            .primary_tag()
+            .or_else(|| tagged.first_tag())
+            .and_then(|t| t.pictures().first())
+            .map(|p| {
+                let mime = p.mime_type().map(|m| m.as_str().to_string()).unwrap_or_else(|| "image/jpeg".into());
+                (format!("data:{mime};base64,{}", b64(p.data())), p.data().len() as u64, image_dimensions(p.data()))
+            })
+    };
+
+    let is_jpeg = matches!(image::guess_format(&bytes), Ok(image::ImageFormat::Jpeg));
+    let (mime, out, dims) = match recompress_cover(&bytes, is_jpeg, max_dim, quality)? {
+        Some(r) => (lofty::picture::MimeType::Jpeg, r.jpeg, r.to),
+        None => {
+            let dims = image_dimensions(&bytes).unwrap_or((0, 0));
+            let (mime, bytes) = prepare_cover(bytes)?;
+            (mime, bytes, dims)
+        }
+    };
+    embed_picture_bytes(path, mime.clone(), out.clone())?;
+
+    let (before_url, before_bytes, before_dims) = before.unwrap_or_default();
+    let (bw, bh) = before_dims.unwrap_or((0, 0));
+    Ok(crate::models::ArtworkChange {
+        before_data_url: before_url,
+        after_data_url: format!("data:{};base64,{}", mime.as_str(), b64(&out)),
+        before_bytes,
+        after_bytes: out.len() as u64,
+        before_width: bw,
+        before_height: bh,
+        after_width: dims.0,
+        after_height: dims.1,
+    })
+}
+
 fn standardize_artwork_blocking(
     path: &str,
     max_dim: u32,
