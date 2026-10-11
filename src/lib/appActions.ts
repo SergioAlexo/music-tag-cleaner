@@ -21,7 +21,7 @@ import type { ActionCtx, ActionRegistry, JsonSchema } from "./actions";
 import { NO_PARAMS } from "./actions";
 import type { FacetPick } from "./facets";
 
-export const PAGES = ["library", "duplicates", "ytmusic", "components", "settings", "logs"] as const;
+export const PAGES = ["library", "duplicates", "ytmusic", "components", "plugins", "settings", "logs"] as const;
 export type AppPage = (typeof PAGES)[number];
 
 export interface AppEnv {
