@@ -61,3 +61,19 @@ export function suggestReason(
   if (tagCompleteness(tags[keeper]) !== tagCompleteness(tags[other])) return "more complete tags";
   return "first by file path (files otherwise tie)";
 }
+
+/** How a group was found (`DuplicateGroup.reason` from `scan_duplicates`):
+ * "audio" = fingerprints matched; "tags+audio" = same artist + title and the
+ * audio partly overlaps; "tags" = same artist + title only (e.g. a radio edit
+ * and an extended mix whose analysed opening differs). Older builds send no
+ * reason, which reads as audio. */
+export function groupReasonLabel(reason?: string): string {
+  switch (reason) {
+    case "tags":
+      return "same artist and title (audio not confirmed)";
+    case "tags+audio":
+      return "same artist and title, audio partly matches";
+    default:
+      return "audio match";
+  }
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AudioFile, TagData } from "../types";
-import { suggestKeeper, suggestReason, tagCompleteness } from "./duplicates";
+import { groupReasonLabel, suggestKeeper, suggestReason, tagCompleteness } from "./duplicates";
 
 function file(path: string, format: string, bitrateKbps?: number): AudioFile {
   return { path, filename: path, format, bitrateKbps, size: 1 } as unknown as AudioFile;
@@ -37,5 +37,14 @@ describe("suggestKeeper / suggestReason", () => {
     const files = { "b.mp3": file("b.mp3", "mp3", 320), "a.mp3": file("a.mp3", "mp3", 320) };
     expect(suggestKeeper(["b.mp3", "a.mp3"], files, {})).toBe("a.mp3");
     expect(suggestReason("a.mp3", "b.mp3", files, {})).toMatch(/file path/);
+  });
+});
+
+describe("groupReasonLabel", () => {
+  it("names each way a group can be found, defaulting to audio", () => {
+    expect(groupReasonLabel("tags")).toMatch(/not confirmed/);
+    expect(groupReasonLabel("tags+audio")).toMatch(/partly matches/);
+    expect(groupReasonLabel("audio")).toBe("audio match");
+    expect(groupReasonLabel(undefined)).toBe("audio match");
   });
 });
