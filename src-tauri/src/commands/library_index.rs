@@ -151,7 +151,8 @@ fn stored_index_version(conn: &Connection) -> i64 {
 pub(crate) fn db_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join("library-index.sqlite"))
+    // B4: the file may have been relocated (e.g. onto a backed-up drive).
+    Ok(crate::commands::organize::resolve_db_path(&dir))
 }
 
 pub(crate) fn open_db(app: &AppHandle) -> Result<Connection, String> {

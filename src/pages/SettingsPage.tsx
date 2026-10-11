@@ -44,6 +44,7 @@ import type { GenreGroup } from "../lib/genres";
 import { Badge, Button, Card, CardHeader, Row, cn, inputClass, selectClass } from "../components/ui";
 import { Combobox } from "../components/Combobox";
 import { RekordboxMixxxExportDialog } from "../components/RekordboxMixxxExportDialog";
+import { OrganizeSettingsCard } from "../components/OrganizeSettingsCard";
 import type { LibraryIndexApi } from "../hooks/useLibraryIndex";
 
 interface Props {
@@ -1622,6 +1623,13 @@ export function SettingsPage({
       </Card>
 
       <LibraryIndexCard settings={settings} onUpdate={onUpdate} libraryIndex={libraryIndex} notify={notify} />
+
+      <OrganizeSettingsCard
+        settings={settings}
+        onUpdate={onUpdate}
+        notify={notify}
+        onLibraryReplaced={() => libraryIndex.refresh()}
+      />
 
       <Card>
         <CardHeader

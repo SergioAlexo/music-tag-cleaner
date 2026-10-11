@@ -277,6 +277,17 @@ export interface Settings {
    * last opened to work on), which may or may not be inside it.
    */
   libraryFolder: string;
+  /** B4: destination folder for "Move to collection" (empty = feature unconfigured). */
+  collectionRoot: string;
+  /** B4: tokens {genre} {album} {albumartist} {artist} {title} {year} {bpm} {key} {trackid} {ext}. */
+  organizePattern: string;
+  /** B4: after a tag write, move saved files that sit outside collectionRoot into it. */
+  autoMoveOnSave: boolean;
+  /** B4: folder for library snapshots (sqlite + library.json). The live db path lives in the backend. */
+  snapshotFolder: string;
+  snapshotOnExit: boolean;
+  /** B4: how many library-*.sqlite snapshots to keep in snapshotFolder. */
+  snapshotKeep: number;
   /** Path to a `rekordbox.xml` collection export, read for BPM/key (D0). */
   rekordboxXmlPath: string;
   /** The XML file's mtime (Unix seconds) as of the last successful import,

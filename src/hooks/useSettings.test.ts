@@ -61,6 +61,6 @@ describe("migrate", () => {
     const next = migrate({ ...DEFAULT_SETTINGS, keyNotation: "camelot" }, 16);
     expect(next.libraryAutoRefresh).toBe(false);
     expect(next.keyNotation).toBe("camelot");
-    expect(next.settingsVersion).toBe(17);
+    expect(next.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
   });
 });
