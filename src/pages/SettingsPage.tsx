@@ -510,6 +510,37 @@ function LibraryIndexCard({
 
         <div className="mt-3 border-t pt-3">
           <Row
+            label="Store fetched lyrics"
+            hint="Fetch lyrics (LRCLIB) is in the track right-click menu. A sidecar .lrc next to the audio file is what VirtualDJ, Mixxx skins and karaoke/visual tools read, and touches no tags. Embedded writes the plain-text lyrics tag (USLT / LYRICS) into the file."
+          >
+            <select
+              className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+              value={settings.lyricsStorage}
+              onChange={(e) =>
+                onUpdate((prev) => ({ ...prev, lyricsStorage: e.target.value as Settings["lyricsStorage"] }))
+              }
+            >
+              <option value="sidecar">Sidecar .lrc file (default)</option>
+              <option value="embedded">Embedded in the tags</option>
+              <option value="both">Both</option>
+            </select>
+          </Row>
+        </div>
+
+        <div className="mt-3 border-t pt-3">
+          <Row
+            label="Also write the language into Comment"
+            hint="When you apply detected languages, add a #lang-es style tag to Comment too. Rekordbox can't show the Language tag, but it (and Serato/Traktor) can search Comment."
+          >
+            <Toggle
+              checked={settings.languageAppendComment}
+              onChange={(v) => onUpdate((prev) => ({ ...prev, languageAppendComment: v }))}
+            />
+          </Row>
+        </div>
+
+        <div className="mt-3 border-t pt-3">
+          <Row
             label="Genre click in a hand-built batch"
             hint="What clicking a genre in the Library sidebar does when you loaded the files yourself (folder, files, drop). Empty and genre sessions always just open the genre."
           >

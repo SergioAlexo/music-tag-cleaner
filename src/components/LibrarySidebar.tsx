@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Disc3,
   Folder,
+  Languages,
   Link2,
   Music2,
   RefreshCw,
@@ -31,7 +32,10 @@ import { cn } from "./ui";
 import { SidebarFacetList } from "./SidebarFacetList";
 import { SidebarTrackSearch } from "./SidebarTrackSearch";
 
-export type SidebarMode = "folders" | "genres" | "albums" | "artists" | "tracks" | "search";
+export type SidebarMode = "folders" | "genres" | "albums" | "languages" | "artists" | "tracks" | "search";
+
+/** The facet a list mode browses. */
+const MODE_FACET: Partial<Record<SidebarMode, Facet>> = { genres: "genre", albums: "album", languages: "language" };
 
 /** What the sidebar currently narrows the track table down to, if anything. */
 export type SidebarFilter =
@@ -224,7 +228,7 @@ export function LibrarySidebar({
         return "count";
       }
     };
-    return { genre: read("genre"), album: read("album") };
+    return { genre: read("genre"), album: read("album"), language: read("language") };
   });
   const toggleSort = (facet: Facet) => {
     const next: FacetSort = sorts[facet] === "count" ? "name" : "count";
@@ -257,6 +261,11 @@ export function LibrarySidebar({
     () => facetItems("album"),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [libraryFacets.album, files, tags],
+  );
+  const languageItems = useMemo(
+    () => facetItems("language"),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [libraryFacets.language, files, tags],
   );
   const artistCounts = useMemo(
     () => tally(files.map((f) => tags[f.path]?.artist)),
@@ -316,9 +325,11 @@ export function LibrarySidebar({
 
   const q = query.trim().toLowerCase();
   const arranged = (facet: Facet, items: FacetCount[]) =>
-    arrangeFacet(items, sorts[facet], query, FACETS[facet].noneLabel);
-  const arrangedGenres = mode === "genres" ? arranged("genre", genreItems) : [];
-  const arrangedAlbums = mode === "albums" ? arranged("album", albumItems) : [];
+    arrangeFacet(items, sorts[facet], query, FACETS[facet].noneLabel, FACETS[facet].display);
+  const modeFacet = MODE_FACET[mode];
+  const arrangedFacet = modeFacet
+    ? arranged(modeFacet, modeFacet === "genre" ? genreItems : modeFacet === "album" ? albumItems : languageItems)
+    : [];
   const activeFacetPick: FacetPick | null =
     activePick ?? (filter?.mode === "facet" ? filter.pick : null);
   const filteredArtists = q ? artistCounts.filter((a) => a.name.toLowerCase().includes(q)) : artistCounts;
@@ -337,12 +348,13 @@ export function LibrarySidebar({
       style={{ width: shownWidth }}
     >
       <div className="flex items-start gap-1 border-b p-2">
-        <div className="grid min-w-0 flex-1 grid-cols-3 gap-1">
+        <div className="grid min-w-0 flex-1 grid-cols-4 gap-1">
           {(
             [
               { id: "folders", label: "Folders", icon: Folder },
               { id: "genres", label: "Genres", icon: Music2 },
               { id: "albums", label: "Albums", icon: Disc3 },
+              { id: "languages", label: "Lang.", icon: Languages },
               { id: "artists", label: "Artists", icon: User },
               { id: "tracks", label: "Tracks", icon: Link2 },
               { id: "search", label: "Search", icon: Search },
@@ -386,7 +398,9 @@ export function LibrarySidebar({
                       ? "genre"
                       : mode === "albums"
                         ? "album"
-                        : mode === "artists"
+                        : mode === "languages"
+                          ? "language"
+                          : mode === "artists"
                           ? "artist"
                           : "track"
                 }…`
@@ -399,17 +413,17 @@ export function LibrarySidebar({
             <X className="h-3 w-3" />
           </button>
         )}
-        {(mode === "genres" || mode === "albums") && (
+        {modeFacet && (
           <button
-            onClick={() => toggleSort(mode === "genres" ? "genre" : "album")}
+            onClick={() => toggleSort(modeFacet)}
             className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
             title={
-              sorts[mode === "genres" ? "genre" : "album"] === "name"
+              sorts[modeFacet] === "name"
                 ? "Sorted A–Z (click to sort by track count)"
                 : "Sorted by track count (click to sort A–Z)"
             }
           >
-            {sorts[mode === "genres" ? "genre" : "album"] === "name" ? (
+            {sorts[modeFacet] === "name" ? (
               <ArrowDownAZ className="h-3.5 w-3.5" />
             ) : (
               <ArrowDownWideNarrow className="h-3.5 w-3.5" />
@@ -441,20 +455,20 @@ export function LibrarySidebar({
         </div>
       )}
 
-      {(mode === "genres" || mode === "albums") && (
+      {modeFacet && (
         <>
-          {!facetFromIndex(mode === "genres" ? "genre" : "album") && (
+          {!facetFromIndex(modeFacet) && (
             <p className="px-3 pt-1.5 text-[11px] text-muted-foreground">
-              Add a library folder in Settings to browse every {FACETS[mode === "genres" ? "genre" : "album"].singular}.
+              Add a library folder in Settings to browse every {FACETS[modeFacet].singular}.
             </p>
           )}
           <SidebarFacetList
-            facet={mode === "genres" ? "genre" : "album"}
-            items={mode === "genres" ? arrangedGenres : arrangedAlbums}
+            facet={modeFacet}
+            items={arrangedFacet}
             query={query}
             active={activeFacetPick}
-            canRename={facetFromIndex(mode === "genres" ? "genre" : "album")}
-            emptyText={`No ${mode === "genres" ? "genres" : "albums"} found.`}
+            canRename={facetFromIndex(modeFacet)}
+            emptyText={`No ${FACETS[modeFacet].label.toLowerCase()} found.`}
             onPick={pickFacet}
             onRename={(pick, next) => onRenameFacet(pick, next)}
           />

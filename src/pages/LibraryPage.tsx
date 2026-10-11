@@ -140,6 +140,8 @@ interface Props {
   onSeparateStems: () => void;
   onConvertFile: (file: AudioFile) => void;
   onMoveToCollection?: (paths: string[]) => void;
+  onFetchLyrics?: (paths: string[]) => void;
+  onDetectLanguage?: (paths: string[]) => void;
   onStandardizeArt: () => void;
   onFindArtwork: (paths: string[]) => void;
   onJunkArt: () => void;
@@ -229,6 +231,8 @@ export function LibraryPage({
   onSeparateStems,
   onConvertFile,
   onMoveToCollection,
+  onFetchLyrics,
+  onDetectLanguage,
   onStandardizeArt,
   onFindArtwork,
   onJunkArt,
@@ -816,6 +820,8 @@ export function LibraryPage({
               onConvertFile={onConvertFile}
               onFindArtwork={onFindArtwork}
               onMoveToCollection={onMoveToCollection}
+              onFetchLyrics={onFetchLyrics}
+              onDetectLanguage={onDetectLanguage}
               trackIdFormats={tidFormats}
               onDeleteFile={onDeleteFile}
               onRenameFile={onRenameFile}

@@ -1,6 +1,7 @@
 import type { AudioFile, TagData } from "../types";
 import { parseSearchableBackup } from "./ytMatch";
 import { parseKey, toCamelot, toOpenKey } from "./keys";
+import { findLanguage } from "./language";
 
 /**
  * One search implementation for every place the app looks a track up: the
@@ -31,6 +32,8 @@ const FIELD_ALIASES: Record<string, keyof TagData | "filename" | "path"> = {
   originalartist: "originalArtist",
   bpm: "bpm",
   key: "key",
+  lang: "language",
+  language: "language",
   track: "trackNumber",
   id: "trackId",
   file: "filename",
@@ -68,6 +71,14 @@ function keyText(key: string | undefined): string {
   return parsed ? `${raw} ${toCamelot(parsed)} ${toOpenKey(parsed)}` : raw;
 }
 
+/** Every way to ask for a language: `spa`, `es` and "Spanish" all find it. */
+function languageText(language: string | undefined): string {
+  const raw = (language ?? "").trim();
+  if (!raw) return "";
+  const l = findLanguage(raw);
+  return l ? `${raw} ${l.code} ${l.iso1 ?? ""} ${l.name}` : raw;
+}
+
 function stemOf(path: string): string {
   const base = path.split(/[\\/]/).pop() ?? path;
   return base.replace(/\.[^.]+$/, "");
@@ -103,6 +114,8 @@ export function trackSearchText(file: AudioFile, tag: TagData | undefined): stri
     if (bpm) parts.push(bpm);
     const key = keyText(tag.key);
     if (key) parts.push(key);
+    const lang = languageText(tag.language);
+    if (lang) parts.push(lang);
     // A backup value is already included verbatim above, but its " | | "
     // separators would otherwise glue words together for substring search.
     for (const key of ["originalArtist", "comment", "composer", "album", "albumArtist"] as const) {
@@ -168,6 +181,7 @@ function fieldText(file: AudioFile, tag: TagData | undefined, field: Term["field
   if (field === "path") return fold(file.path);
   if (field === "bpm") return fold(bpmText(tag?.bpm));
   if (field === "key") return fold(keyText(tag?.key));
+  if (field === "language") return fold(languageText(tag?.language));
   const v = field && tag ? tag[field] : undefined;
   return typeof v === "string" ? fold(v) : "";
 }

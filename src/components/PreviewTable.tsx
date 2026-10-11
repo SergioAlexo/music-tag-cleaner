@@ -57,7 +57,9 @@ export default function PreviewTable({ rows, mode, busy, onRowsChange, onApply, 
                       ? "Preview — Move Track Number IDs to Track ID"
                       : mode === "rekordboxSync"
                         ? "Preview — Rekordbox BPM / Key / Rating into tags"
-                        : "Preview — Standardize"}
+                        : mode === "language"
+                          ? "Preview — Detected languages"
+                          : "Preview — Standardize"}
           </h2>
           <p className="text-xs text-muted-foreground">
             {readOnly
@@ -108,6 +110,7 @@ export default function PreviewTable({ rows, mode, busy, onRowsChange, onApply, 
                   </td>
                   <td className="whitespace-nowrap px-3 py-1.5">
                     {FIELD_LABELS[row.field] ?? row.field}
+                    {row.note && <span className="block text-[10px] text-muted-foreground">{row.note}</span>}
                   </td>
                   <td
                     className="max-w-[260px] truncate px-3 py-1.5 text-muted-foreground"

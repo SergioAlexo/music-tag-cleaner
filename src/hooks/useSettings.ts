@@ -38,6 +38,8 @@ export const DEFAULT_SETTINGS: Settings = {
   keyNotation: "stored",
   libraryAutoRefresh: false,
   aiControl: false,
+  lyricsStorage: "sidecar",
+  languageAppendComment: false,
   theme: "system",
   visibleColumns: [
     "preview",
@@ -228,9 +230,16 @@ export function migrate(s: Settings, savedVersion: number): Settings {
   // v18: collectionRoot, organizePattern, autoMoveOnSave, snapshotFolder,
   // snapshotOnExit, snapshotKeep. All filled in by the DEFAULT_SETTINGS merge,
   // so no data step is needed.
+  // v19 is reserved for the artwork work (B2) and carries no step here, so the
+  // chain stays valid whichever lands first.
+  // v20: lyricsStorage ("sidecar") and languageAppendComment (false), also
+  // filled in by the merge. The Language column is not added to
+  // visibleColumns: it is opt-in from the column picker.
+  if (savedVersion < 20) {
+    // (no data change)
+  }
   if (savedVersion < 21) {
-    // D1: aiControl (default off, filled in by the merge). Versions 19-20 are
-    // reserved by parallel branches (B3 takes 20); nothing to migrate here.
+    // D1: aiControl (default off, filled in by the merge).
     next.aiControl = false;
   }
   next.settingsVersion = CURRENT_SETTINGS_VERSION;
