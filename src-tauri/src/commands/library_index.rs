@@ -83,9 +83,12 @@ CREATE TABLE IF NOT EXISTS library_track (
     original_artist TEXT,
     track_id TEXT,
     rating INTEGER,
-    indexed_at INTEGER NOT NULL
+    indexed_at INTEGER NOT NULL,
+    bpm_tag TEXT,
+    key_tag TEXT
 );
 CREATE INDEX IF NOT EXISTS library_track_genre ON library_track(genre);
+CREATE INDEX IF NOT EXISTS library_track_album ON library_track(album);
 CREATE INDEX IF NOT EXISTS library_track_artist ON library_track(artist);
 CREATE TABLE IF NOT EXISTS library_root (
     path TEXT PRIMARY KEY,
@@ -129,7 +132,10 @@ CREATE TABLE IF NOT EXISTS rekordbox_track (
 /// v3: MP3 star ratings are read from their POPM frames (always NULL before),
 ///     and `comment` is the plain comment rather than whichever came first
 ///     (often iTunes' `iTunNORM` hex).
-const INDEX_VERSION: i64 = 3;
+///
+/// v4: the file's own BPM and key tags are stored (`bpm_tag`, `key_tag`), so
+///     tracks that are only in the index show them, not just Rekordbox's.
+const INDEX_VERSION: i64 = 4;
 
 fn stored_index_version(conn: &Connection) -> i64 {
     conn.query_row(
@@ -160,7 +166,33 @@ pub(crate) fn open_db(app: &AppHandle) -> Result<Connection, String> {
     // fails at once with "database is locked" instead of waiting its turn.
     let _ = conn.busy_timeout(std::time::Duration::from_secs(10));
     conn.execute_batch(SCHEMA_SQL).map_err(|e| e.to_string())?;
+    migrate_columns(&conn)?;
     Ok(conn)
+}
+
+/// Columns added after the first release. `CREATE TABLE IF NOT EXISTS` does
+/// nothing for a database that already has the table, so a column the schema
+/// gained later has to be added by hand; the INDEX_VERSION bump that
+/// accompanies it makes the next index re-read every file to fill it in.
+fn migrate_columns(conn: &Connection) -> Result<(), String> {
+    let have: BTreeSet<String> = {
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('library_track')")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        rows
+    };
+    for (col, ty) in [("bpm_tag", "TEXT"), ("key_tag", "TEXT")] {
+        if !have.contains(col) {
+            conn.execute(&format!("ALTER TABLE library_track ADD COLUMN {col} {ty}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn now_secs() -> i64 {
@@ -206,8 +238,9 @@ fn upsert_track(
             "INSERT OR REPLACE INTO library_track (
                 path, mtime, size, format, duration_secs, has_backup, has_cover,
                 title, artist, album, album_artist, genre, year, comment,
-                composer, original_artist, track_id, rating, indexed_at
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+                composer, original_artist, track_id, rating, indexed_at,
+                bpm_tag, key_tag
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
         )
         .map_err(|e| e.to_string())?;
     stmt.execute(params![
@@ -234,6 +267,8 @@ fn upsert_track(
         tags.track_id,
         tags.rating.map(|r| r as i64),
         now,
+        tags.bpm.filter(|b| !b.trim().is_empty()),
+        tags.key.filter(|k| !k.trim().is_empty()),
     ])
     .map(|_| ())
     .map_err(|e| e.to_string())
@@ -292,6 +327,10 @@ pub struct IndexedTrack {
     pub original_artist: Option<String>,
     pub track_id: Option<String>,
     pub rating: Option<u8>,
+    /// The file's own BPM / key tags (index v4), as written. Unlike `bpm` /
+    /// `key` below, which come from Rekordbox.
+    pub tag_bpm: Option<String>,
+    pub tag_key: Option<String>,
     /// From a Rekordbox XML import (D0), joined in by path — not file-tag
     /// data, so it's `None` for every track until that's been run once.
     pub bpm: Option<f64>,
@@ -628,6 +667,8 @@ fn row_to_track(r: &rusqlite::Row) -> rusqlite::Result<IndexedTrack> {
         original_artist: r.get("original_artist")?,
         track_id: r.get("track_id")?,
         rating: r.get::<_, Option<i64>>("rating")?.map(|v| v as u8),
+        tag_bpm: r.get("bpm_tag")?,
+        tag_key: r.get("key_tag")?,
         bpm: r.get("rb_bpm")?,
         key: r.get("rb_key")?,
         path,
@@ -738,6 +779,120 @@ pub async fn library_genres(app: AppHandle) -> Result<Vec<GenreCount>, String> {
     })
     .await
     .map_err(|_| "Reading library genres failed unexpectedly".to_string())?
+}
+
+/// A column the sidebar can browse by. Adding one (B3's language) means a
+/// column, an arm in each method here, and a TS entry in `src/lib/facets.ts`;
+/// the queries, commands and sidebar need no other change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Facet {
+    Genre,
+    Album,
+}
+
+impl Facet {
+    /// The indexed column holding the facet's value. Never user input: this is
+    /// spliced into SQL, so it comes from the enum and nothing else.
+    fn column(self) -> &'static str {
+        match self {
+            Facet::Genre => "genre",
+            Facet::Album => "album",
+        }
+    }
+    /// SQL for the second grouping key. Albums are told apart by album artist
+    /// so two "Greatest Hits" do not merge; other facets have none.
+    fn artist_expr(self) -> &'static str {
+        match self {
+            Facet::Album => "COALESCE(TRIM(album_artist), '')",
+            _ => "''",
+        }
+    }
+}
+
+/// One entry of a facet list. `name == ""` is the "no value" bucket (tracks
+/// whose field is empty), which the sidebar shows as "No genre" / "No album".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FacetCount {
+    pub name: String,
+    /// Album artist for albums, else empty.
+    pub artist: String,
+    pub count: i64,
+}
+
+fn facet_counts(conn: &Connection, facet: Facet) -> Result<Vec<FacetCount>, String> {
+    let (col, art) = (facet.column(), facet.artist_expr());
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {col}, {art}, COUNT(*) AS n FROM library_track
+             WHERE {col} IS NOT NULL AND TRIM({col}) <> ''
+             GROUP BY {col}, {art} ORDER BY n DESC, {col} ASC, {art} ASC"
+        ))
+        .map_err(|e| e.to_string())?;
+    let mut rows: Vec<FacetCount> = stmt
+        .query_map([], |r| {
+            Ok(FacetCount { name: r.get(0)?, artist: r.get(1)?, count: r.get(2)? })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .collect();
+    let empty: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM library_track WHERE {col} IS NULL OR TRIM({col}) = ''"),
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if empty > 0 {
+        rows.insert(0, FacetCount { name: String::new(), artist: String::new(), count: empty });
+    }
+    Ok(rows)
+}
+
+/// Paths in one facet bucket. An empty `name` is the "no value" bucket.
+fn facet_paths(conn: &Connection, facet: Facet, name: &str, artist: &str) -> Result<Vec<String>, String> {
+    let (col, art) = (facet.column(), facet.artist_expr());
+    let (sql, bound): (String, Vec<&str>) = if name.trim().is_empty() {
+        (
+            format!("SELECT path FROM library_track WHERE {col} IS NULL OR TRIM({col}) = '' ORDER BY path"),
+            vec![],
+        )
+    } else {
+        (
+            format!("SELECT path FROM library_track WHERE {col} = ?1 AND {art} = ?2 ORDER BY path"),
+            vec![name, artist],
+        )
+    };
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(bound), |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(rows)
+}
+
+/// Every value of `facet` in the collection with counts, plus the "none" bucket.
+#[tauri::command]
+pub async fn library_facets(app: AppHandle, facet: Facet) -> Result<Vec<FacetCount>, String> {
+    tauri::async_runtime::spawn_blocking(move || facet_counts(&open_db(&app)?, facet))
+        .await
+        .map_err(|_| "Reading library facets failed unexpectedly".to_string())?
+}
+
+#[tauri::command]
+pub async fn library_paths_with_facet(
+    app: AppHandle,
+    facet: Facet,
+    name: String,
+    artist: Option<String>,
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        facet_paths(&open_db(&app)?, facet, &name, artist.as_deref().unwrap_or("").trim())
+    })
+    .await
+    .map_err(|_| "Reading tracks failed unexpectedly".to_string())?
 }
 
 #[tauri::command]
@@ -1115,5 +1270,115 @@ mod tests {
         assert_eq!(t.rating, Some(4));
         assert!(t.has_cover_art);
         assert!(!t.has_backup);
+    }
+
+    fn insert_album(
+        conn: &Connection,
+        path: &str,
+        album: Option<&str>,
+        album_artist: Option<&str>,
+        genre: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO library_track (path, mtime, size, format, album, album_artist, genre, indexed_at)
+             VALUES (?1, 1, 1, 'mp3', ?2, ?3, ?4, 100)",
+            params![path, album, album_artist, genre],
+        )
+        .unwrap();
+    }
+
+    fn fc(name: &str, artist: &str, count: i64) -> FacetCount {
+        FacetCount { name: name.into(), artist: artist.into(), count }
+    }
+
+    #[test]
+    fn album_facet_keeps_same_titled_albums_by_different_artists_apart() {
+        let conn = mem_db();
+        insert_album(&conn, "a1.mp3", Some("Greatest Hits"), Some("Queen"), None);
+        insert_album(&conn, "a2.mp3", Some("Greatest Hits"), Some("Queen"), None);
+        insert_album(&conn, "b1.mp3", Some("Greatest Hits"), Some("ABBA"), None);
+        insert_album(&conn, "c1.mp3", Some("Solo"), None, None);
+        insert_album(&conn, "d1.mp3", Some("  "), Some("X"), None);
+        insert_album(&conn, "e1.mp3", None, None, None);
+
+        let rows = facet_counts(&conn, Facet::Album).unwrap();
+        // The "No album" bucket (blank and NULL) leads; the rest by use.
+        assert_eq!(
+            rows,
+            vec![
+                fc("", "", 2),
+                fc("Greatest Hits", "Queen", 2),
+                fc("Greatest Hits", "ABBA", 1),
+                fc("Solo", "", 1),
+            ]
+        );
+        assert_eq!(
+            facet_paths(&conn, Facet::Album, "Greatest Hits", "Queen").unwrap(),
+            vec!["a1.mp3", "a2.mp3"]
+        );
+        assert_eq!(facet_paths(&conn, Facet::Album, "Greatest Hits", "ABBA").unwrap(), vec!["b1.mp3"]);
+        // An album with no album artist is found with an empty artist.
+        assert_eq!(facet_paths(&conn, Facet::Album, "Solo", "").unwrap(), vec!["c1.mp3"]);
+        assert_eq!(facet_paths(&conn, Facet::Album, "", "").unwrap(), vec!["d1.mp3", "e1.mp3"]);
+    }
+
+    #[test]
+    fn genre_facet_has_a_no_genre_bucket_only_when_something_is_untagged() {
+        let conn = mem_db();
+        insert(&conn, "a.mp3", Some("Techno"), None);
+        insert(&conn, "b.mp3", Some("Techno"), None);
+        insert(&conn, "c.mp3", Some(" "), None);
+        insert(&conn, "d.mp3", None, None);
+        assert_eq!(
+            facet_counts(&conn, Facet::Genre).unwrap(),
+            vec![fc("", "", 2), fc("Techno", "", 2)]
+        );
+        assert_eq!(facet_paths(&conn, Facet::Genre, "", "").unwrap(), vec!["c.mp3", "d.mp3"]);
+        assert_eq!(facet_paths(&conn, Facet::Genre, "Techno", "").unwrap(), vec!["a.mp3", "b.mp3"]);
+
+        let conn = mem_db();
+        insert(&conn, "a.mp3", Some("House"), None);
+        assert_eq!(facet_counts(&conn, Facet::Genre).unwrap(), vec![fc("House", "", 1)]);
+    }
+
+    #[test]
+    fn an_old_database_gains_the_tag_bpm_and_key_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        // The v3 shape: no bpm_tag / key_tag.
+        conn.execute_batch(
+            "CREATE TABLE library_track (path TEXT PRIMARY KEY, mtime INTEGER NOT NULL, size INTEGER NOT NULL,
+             format TEXT NOT NULL, indexed_at INTEGER NOT NULL, album TEXT, genre TEXT);
+             INSERT INTO library_track VALUES ('a.mp3', 1, 1, 'mp3', 1, NULL, NULL);",
+        )
+        .unwrap();
+        migrate_columns(&conn).unwrap();
+        // Idempotent: opening the database again must not fail on a duplicate column.
+        migrate_columns(&conn).unwrap();
+        conn.execute("UPDATE library_track SET bpm_tag = '128', key_tag = '8A'", []).unwrap();
+        let (b, k): (String, String) = conn
+            .query_row("SELECT bpm_tag, key_tag FROM library_track", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((b.as_str(), k.as_str()), ("128", "8A"));
+    }
+
+    #[test]
+    fn index_rows_carry_the_files_own_bpm_and_key() {
+        let conn = mem_db();
+        conn.execute(
+            "INSERT INTO library_track (path, mtime, size, format, bpm_tag, key_tag, indexed_at)
+             VALUES ('C:/m/x.mp3', 1, 2, 'mp3', '127.99', 'Am', 100)",
+            [],
+        )
+        .unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT lt.*, rb.bpm AS rb_bpm, rb.key AS rb_key FROM library_track lt
+                 LEFT JOIN rekordbox_track rb ON LOWER(lt.path) = rb.path_lower",
+            )
+            .unwrap();
+        let t = stmt.query_row([], row_to_track).unwrap();
+        assert_eq!(t.tag_bpm.as_deref(), Some("127.99"));
+        assert_eq!(t.tag_key.as_deref(), Some("Am"));
+        assert_eq!(t.bpm, None);
     }
 }

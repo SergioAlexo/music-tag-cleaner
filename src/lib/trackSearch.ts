@@ -1,5 +1,6 @@
 import type { AudioFile, TagData } from "../types";
 import { parseSearchableBackup } from "./ytMatch";
+import { parseKey, toCamelot, toOpenKey } from "./keys";
 
 /**
  * One search implementation for every place the app looks a track up: the
@@ -28,6 +29,8 @@ const FIELD_ALIASES: Record<string, keyof TagData | "filename" | "path"> = {
   comment: "comment",
   composer: "composer",
   originalartist: "originalArtist",
+  bpm: "bpm",
+  key: "key",
   track: "trackNumber",
   id: "trackId",
   file: "filename",
@@ -39,6 +42,30 @@ const FIELD_ALIASES: Record<string, keyof TagData | "filename" | "path"> = {
 /** Lowercased, diacritic-folded — so "Bjork" finds "Björk". */
 export function fold(value: string): string {
   return value.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase();
+}
+
+/**
+ * What a BPM tag is searchable as: the text as stored ("127.99") and, when it
+ * is a number, its rounded integer, so typing `128` finds a 127.99 file the
+ * way a DJ reads it.
+ */
+function bpmText(bpm: string | undefined): string {
+  const raw = (bpm ?? "").trim();
+  if (!raw) return "";
+  const n = Number(raw.replace(",", "."));
+  return Number.isFinite(n) && n > 0 ? `${raw} ${Math.round(n)}` : raw;
+}
+
+/**
+ * Every spelling of a key tag, so `8A`, `Am` and `1m` all find the same file
+ * whatever notation the tag is stored in and whatever notation the Key column
+ * is displaying (a search must not depend on a display preference).
+ */
+function keyText(key: string | undefined): string {
+  const raw = (key ?? "").trim();
+  if (!raw) return "";
+  const parsed = parseKey(raw);
+  return parsed ? `${raw} ${toCamelot(parsed)} ${toOpenKey(parsed)}` : raw;
 }
 
 function stemOf(path: string): string {
@@ -72,6 +99,10 @@ export function trackSearchText(file: AudioFile, tag: TagData | undefined): stri
       const v = tag[key];
       if (typeof v === "string" && v.trim()) parts.push(v);
     }
+    const bpm = bpmText(tag.bpm);
+    if (bpm) parts.push(bpm);
+    const key = keyText(tag.key);
+    if (key) parts.push(key);
     // A backup value is already included verbatim above, but its " | | "
     // separators would otherwise glue words together for substring search.
     for (const key of ["originalArtist", "comment", "composer", "album", "albumArtist"] as const) {
@@ -135,6 +166,8 @@ export function parseQuery(query: string): Term[] {
 function fieldText(file: AudioFile, tag: TagData | undefined, field: Term["field"]): string {
   if (field === "filename") return fold(stemOf(file.path));
   if (field === "path") return fold(file.path);
+  if (field === "bpm") return fold(bpmText(tag?.bpm));
+  if (field === "key") return fold(keyText(tag?.key));
   const v = field && tag ? tag[field] : undefined;
   return typeof v === "string" ? fold(v) : "";
 }
@@ -150,7 +183,16 @@ export function matchesTerms(
   const all = haystack ?? trackSearchText(file, tag);
   for (const term of terms) {
     const target = term.field ? fieldText(file, tag, term.field) : all;
-    const hit = target.includes(term.text);
+    let hit = target.includes(term.text);
+    // `key:8A` is a musical question, not a substring one: "am" must not find
+    // "Bm", and "1m" must find an A minor stored as "Am". Anything that is not
+    // a key at all (a half-typed "key:8") still falls back to text.
+    if (term.field === "key") {
+      const wanted = parseKey(term.text);
+      const have = parseKey(tag?.key);
+      if (wanted && have) hit = wanted.num === have.num && wanted.mode === have.mode;
+      else if (wanted) hit = false;
+    }
     if (hit === term.negated) return false;
   }
   return true;

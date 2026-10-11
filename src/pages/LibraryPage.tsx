@@ -45,10 +45,12 @@ import { CapitalizationMenu } from "../components/CapitalizationMenu";
 import { LibrarySidebar, matchesSidebarFilter, type SidebarFilter } from "../components/LibrarySidebar";
 import { Button } from "../components/ui";
 import { decideGenreClick, tabTitle, type SessionSource } from "../lib/sessionTabs";
+import { facetLabel, type Facet, type FacetPick } from "../lib/facets";
+import { describeRefresh } from "../lib/libraryRefresh";
+import type { LibraryIndexApi } from "../hooks/useLibraryIndex";
 import { SessionTabs } from "../components/SessionTabs";
 import { GenreSessionDialog, type GenreSessionChoice } from "../components/GenreSessionDialog";
 import type { SessionTabView } from "../hooks/useSessionTabs";
-import type { GenreCount } from "../types";
 
 /** Whether the open working batch is somewhere other than inside the
  * permanent Library folder — the status line in A6 only needs to show up
@@ -78,14 +80,18 @@ interface FilesApi {
 interface Props {
   filesApi: FilesApi;
   libraryTags: Record<string, TagData>;
-  /** Every genre in the library index (empty until one exists). */
-  libraryGenres: GenreCount[];
-  /** Swaps the batch for a library genre; the caller guards unapplied previews. */
-  onLoadGenre: (genre: string) => void;
-  /** Opens a library genre in a fresh session tab, leaving this one alone. */
-  onOpenGenreInNewTab: (genre: string) => void;
-  /** Forgets this session's list and undo history, then loads the genre. */
-  onReplaceWithGenre: (genre: string) => void;
+  /** The library index: facet lists, the indexed tracks to search, and Refresh. */
+  libraryIndex: LibraryIndexApi;
+  /** Swaps the batch for a library genre / album; the caller guards unapplied previews. */
+  onLoadFacet: (pick: FacetPick) => void;
+  /** Opens a library genre / album in a fresh session tab, leaving this one alone. */
+  onOpenFacetInNewTab: (pick: FacetPick) => void;
+  /** Forgets this session's list and undo history, then loads the genre / album. */
+  onReplaceWithFacet: (pick: FacetPick) => void;
+  /** Adds searched library tracks to the current session. */
+  onAddTracks: (paths: string[]) => void;
+  /** Retags every track of a genre / album bucket. */
+  onRenameFacet: (facet: Facet, oldName: string, newName: string, artist?: string) => void;
   tabs: SessionTabView[];
   activeTabId: string;
   /** Tab switching is off while a long action is running in the live tab. */
@@ -171,10 +177,12 @@ interface Props {
 export function LibraryPage({
   filesApi,
   libraryTags,
-  libraryGenres,
-  onLoadGenre,
-  onOpenGenreInNewTab,
-  onReplaceWithGenre,
+  libraryIndex,
+  onLoadFacet,
+  onOpenFacetInNewTab,
+  onReplaceWithFacet,
+  onAddTracks,
+  onRenameFacet,
   tabs,
   activeTabId,
   tabsLocked,
@@ -254,29 +262,53 @@ export function LibraryPage({
   );
   // A genre click normally loads that genre. A hand-built batch is never
   // thrown away by one: it asks (or follows the remembered answer) first.
-  const [genreDialog, setGenreDialog] = useState<string | null>(null);
-  const filterToGenre = (genre: string) =>
-    setSidebarFilter((f) => (f?.mode === "genre" && f.value === genre ? null : { mode: "genre", value: genre }));
-  const onGenreClick = (genre: string) => {
+  const [genreDialog, setGenreDialog] = useState<FacetPick | null>(null);
+  const filterToFacet = (pick: FacetPick) =>
+    setSidebarFilter((f) =>
+      f?.mode === "facet" && f.pick.facet === pick.facet && f.pick.name === pick.name && f.pick.artist === pick.artist
+        ? null
+        : { mode: "facet", pick },
+    );
+  const onFacetClick = (pick: FacetPick) => {
     const action = decideGenreClick({
       source: filesApi.source,
       hasUnappliedPreview: !!pending && previewMode !== "history",
       manualChoice: settings.genreClickInManualSession,
     });
-    if (action === "ask") return setGenreDialog(genre);
-    if (action === "filter") return filterToGenre(genre);
+    if (action === "ask") return setGenreDialog(pick);
+    if (action === "filter") return filterToFacet(pick);
     setSidebarFilter(null);
-    if (action === "new-tab") onOpenGenreInNewTab(genre);
-    else if (action === "replace") onReplaceWithGenre(genre);
-    else onLoadGenre(genre);
+    if (action === "new-tab") onOpenFacetInNewTab(pick);
+    else if (action === "replace") onReplaceWithFacet(pick);
+    else onLoadFacet(pick);
   };
-  const chooseForGenre = (genre: string, choice: GenreSessionChoice, remember: boolean) => {
+  const chooseForFacet = (pick: FacetPick, choice: GenreSessionChoice, remember: boolean) => {
     setGenreDialog(null);
     if (remember) onSaveSettings({ genreClickInManualSession: choice });
-    if (choice === "filter") return filterToGenre(genre);
+    if (choice === "filter") return filterToFacet(pick);
     setSidebarFilter(null);
-    if (choice === "newTab") onOpenGenreInNewTab(genre);
-    else onReplaceWithGenre(genre);
+    if (choice === "newTab") onOpenFacetInNewTab(pick);
+    else onReplaceWithFacet(pick);
+  };
+
+  // Refresh: the incremental index scan. The sidebar shows the line it returns;
+  // the toast makes it visible if the sidebar is scrolled/hidden elsewhere.
+  const sessionPaths = useMemo(() => new Set(filesApi.files.map((f) => f.path)), [filesApi.files]);
+  const refreshLibrary = async (): Promise<string | null> => {
+    if (!libraryIndex.stats?.roots.length) {
+      notify("Choose a Library folder in Settings first", "info");
+      return null;
+    }
+    try {
+      const summary = await libraryIndex.refreshFromDisk();
+      if (!summary) return null;
+      const line = describeRefresh(summary);
+      notify(`Library refreshed: ${line}`, summary.errors.length ? "info" : "success", { silent: true });
+      return line;
+    } catch (e) {
+      notify(String(e), "error");
+      return null;
+    }
   };
 
   // A filter narrows one tab's batch; it doesn't follow you to another tab.
@@ -687,9 +719,17 @@ export function LibraryPage({
           width={settings.sidebarWidth}
           collapsed={settings.sidebarCollapsed}
           filter={sidebarFilter}
-          libraryGenres={libraryGenres}
-          activeGenre={filesApi.source.kind === "genre" ? filesApi.source.genre : null}
-          onGenreClick={onGenreClick}
+          libraryFacets={libraryIndex.facets}
+          activePick={filesApi.source.kind === "facet" ? filesApi.source : null}
+          onFacetClick={onFacetClick}
+          onRenameFacet={(pick, next) => onRenameFacet(pick.facet, pick.name, next, pick.artist)}
+          searchFiles={libraryIndex.files}
+          searchTags={libraryIndex.tags}
+          sessionPaths={sessionPaths}
+          onAddTracks={onAddTracks}
+          indexing={libraryIndex.indexing}
+          progress={libraryIndex.progress}
+          onRefresh={refreshLibrary}
           onFilterChange={setSidebarFilter}
           onWidthChange={(w) => onSaveSettings({ sidebarWidth: w })}
           onCollapsedChange={(c) => onSaveSettings({ sidebarCollapsed: c })}
@@ -764,12 +804,12 @@ export function LibraryPage({
       </div>
       {genreDialog && (
         <GenreSessionDialog
-          genre={genreDialog}
+          label={facetLabel(genreDialog)}
           sessionLabel={tabTitle(filesApi.source, filesApi.files.map((f) => f.path))}
           fileCount={filesApi.files.length}
           undoSteps={undoSteps}
           hasPreview={inlinePreview}
-          onChoose={(choice, remember) => chooseForGenre(genreDialog, choice, remember)}
+          onChoose={(choice, remember) => chooseForFacet(genreDialog, choice, remember)}
           onCancel={() => setGenreDialog(null)}
         />
       )}

@@ -58,7 +58,7 @@ describe("parseQuery", () => {
   });
 
   it("treats an unknown prefix as literal text, not a field", () => {
-    expect(parseQuery("bpm:128")).toEqual([{ field: null, text: "bpm:128", negated: false }]);
+    expect(parseQuery("mood:128")).toEqual([{ field: null, text: "mood:128", negated: false }]);
   });
 });
 
@@ -95,5 +95,57 @@ describe("searchTracks", () => {
 
   it("returns nothing for an empty query rather than everything", () => {
     expect(searchTracks(files, tags, "   ")).toEqual([]);
+  });
+});
+
+describe("BPM and key search", () => {
+  const a = file("C:/m/a.mp3");
+  const b = file("C:/m/b.mp3");
+  const c = file("C:/m/c.mp3");
+  const ts: Record<string, TagData> = {
+    [a.path]: tag({ title: "Alpha", bpm: "127.99", key: "Am" }),
+    [b.path]: tag({ title: "Bravo", bpm: "140", key: "8B" }),
+    [c.path]: tag({ title: "Charlie", key: "Bm" }),
+  };
+  const all = [a, b, c];
+  const found = (q: string) => searchTracks(all, ts, q).map((h) => h.file.path);
+
+  it("finds a BPM by its stored text or its rounded value", () => {
+    expect(found("bpm:127.99")).toEqual([a.path]);
+    expect(found("bpm:128")).toEqual([a.path]);
+    expect(found("bpm:140")).toEqual([b.path]);
+  });
+
+  it("a bare number searches BPM too", () => {
+    expect(found("140")).toEqual([b.path]);
+  });
+
+  it("finds a key in every notation, whatever it is stored as", () => {
+    // Am == 8A == 1m; 8B == C major == 1d.
+    expect(found("key:8A")).toEqual([a.path]);
+    expect(found("key:1m")).toEqual([a.path]);
+    expect(found("key:Am")).toEqual([a.path]);
+    expect(found("key:8B")).toEqual([b.path]);
+    expect(found("key:C")).toEqual([b.path]);
+    expect(found("key:1d")).toEqual([b.path]);
+  });
+
+  it("key: is exact, not a substring match", () => {
+    // "Bm" is 10A; it must not match "Am" or a plain "m".
+    expect(found("key:10A")).toEqual([c.path]);
+    expect(found("key:A")).toEqual([]);
+  });
+
+  it("a bare camelot key finds the track without the key: prefix", () => {
+    expect(found("8a")).toEqual([a.path]);
+  });
+
+  it("does not change with the haystack cache: a re-tagged BPM is found", () => {
+    const f = file("C:/m/retag.mp3");
+    const t1 = tag({ bpm: "100" });
+    expect(searchTracks([f], { [f.path]: t1 }, "bpm:100")).toHaveLength(1);
+    const t2 = tag({ bpm: "122" });
+    expect(searchTracks([f], { [f.path]: t2 }, "bpm:100")).toHaveLength(0);
+    expect(searchTracks([f], { [f.path]: t2 }, "bpm:122")).toHaveLength(1);
   });
 });

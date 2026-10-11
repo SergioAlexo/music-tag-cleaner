@@ -284,6 +284,8 @@ export interface Settings {
   rekordboxXmlMtime: number;
   /** How the Key column is shown: as stored in the file/Rekordbox, Camelot (8A) or Open Key (3m). */
   keyNotation: KeyNotation;
+  /** Re-run the incremental library scan whenever the window regains focus (at most once a minute). Off by default. */
+  libraryAutoRefresh: boolean;
   /**
    * "system" follows the OS light/dark setting and is the default —
    * there is no in-app theme switcher any more. The explicit values are
@@ -588,6 +590,9 @@ export interface IndexedTrack {
   originalArtist?: string | null;
   trackId?: string | null;
   rating?: number | null;
+  /** The file's own BPM / key tags (index v4). `bpm`/`key` below are Rekordbox's. */
+  tagBpm?: string | null;
+  tagKey?: string | null;
   bpm?: number | null;
   key?: string | null;
 }
@@ -705,6 +710,8 @@ export function indexedToTags(t: IndexedTrack): TagData {
     originalArtist: t.originalArtist ?? undefined,
     trackId: t.trackId ?? undefined,
     rating: t.rating ?? undefined,
+    bpm: t.tagBpm ?? undefined,
+    key: t.tagKey ?? undefined,
     hasCoverArt: t.hasCoverArt,
     allFields: {},
   };
