@@ -63,4 +63,13 @@ describe("migrate", () => {
     expect(next.keyNotation).toBe("camelot");
     expect(next.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
   });
+
+  it("v20 adds lyricsStorage (sidecar) and languageAppendComment (off) and keeps columns as they are", () => {
+    const old = { ...DEFAULT_SETTINGS, visibleColumns: ["title", "artist"] };
+    const next = migrate(old, 18);
+    expect(next.lyricsStorage).toBe("sidecar");
+    expect(next.languageAppendComment).toBe(false);
+    expect(next.visibleColumns).toEqual(["title", "artist"]);
+    expect(next.settingsVersion).toBe(20);
+  });
 });

@@ -37,6 +37,8 @@ export interface TagData {
   bpm?: string;
   /** Musical key as written in the file (TKEY / INITIALKEY), in the writer's notation. */
   key?: string;
+  /** Language of the vocals, ISO 639-2 (TLAN / LANGUAGE); `zxx` = instrumental. */
+  language?: string;
   hasCoverArt: boolean;
   /** Full dump of every text field, keyed by canonical lofty key name. */
   allFields: Record<string, string>;
@@ -297,6 +299,10 @@ export interface Settings {
   keyNotation: KeyNotation;
   /** Re-run the incremental library scan whenever the window regains focus (at most once a minute). Off by default. */
   libraryAutoRefresh: boolean;
+  /** Where fetched lyrics go: a sidecar .lrc/.txt next to the audio, the file's own lyrics tag, or both. */
+  lyricsStorage: LyricsStorage;
+  /** Also append `#lang-xx` to Comment when language suggestions are applied (Rekordbox cannot show TLAN). */
+  languageAppendComment: boolean;
   /**
    * "system" follows the OS light/dark setting and is the default —
    * there is no in-app theme switcher any more. The explicit values are
@@ -376,7 +382,10 @@ export type PreviewMode =
   | "clear"
   | "history"
   | "trackIdMigration"
-  | "rekordboxSync";
+  | "rekordboxSync"
+  | "language";
+
+export type LyricsStorage = "sidecar" | "embedded" | "both";
 
 export type KeyNotation = "stored" | "camelot" | "openkey";
 
@@ -392,6 +401,7 @@ export const CLEARABLE_FIELDS = [
   "trackId",
   "composer",
   "originalArtist",
+  "language",
 ] as const;
 
 export interface PendingChange {
@@ -411,6 +421,8 @@ export interface PendingChange {
    * than by setting a value.
    */
   raw?: boolean;
+  /** Optional small explanation shown under the field name in the preview. */
+  note?: string;
 }
 
 /** Mirrors `AUDIO_EXTENSIONS` in `src-tauri/src/commands/files.rs`. */
@@ -441,6 +453,8 @@ export const KEPT_FIELD_KEYS = new Set([
   "Bpm",
   "IntegerBpm",
   "InitialKey",
+  // Language has its own curated column (and survives a strip).
+  "Language",
   // Format-specific spellings of Track ID / Original Artist (see KEPT_FIELD_KEYS in library_index.rs).
   "Unknown(ORIGINALARTIST)",
   "Unknown(----:com.apple.iTunes:TRACKID)",
@@ -463,6 +477,7 @@ export const FIELD_LABELS: Record<string, string> = {
   rating: "Rating",
   bpm: "BPM",
   key: "Key",
+  language: "Language",
 };
 
 // v0.9 F5 — Rekordbox cue import. Field names are camelCase to match the
@@ -604,6 +619,8 @@ export interface IndexedTrack {
   /** The file's own BPM / key tags (index v4). `bpm`/`key` below are Rekordbox's. */
   tagBpm?: string | null;
   tagKey?: string | null;
+  /** The Language tag, lowercased (index v5). */
+  language?: string | null;
   bpm?: number | null;
   key?: string | null;
 }
@@ -723,6 +740,7 @@ export function indexedToTags(t: IndexedTrack): TagData {
     rating: t.rating ?? undefined,
     bpm: t.tagBpm ?? undefined,
     key: t.tagKey ?? undefined,
+    language: t.language ?? undefined,
     hasCoverArt: t.hasCoverArt,
     allFields: {},
   };

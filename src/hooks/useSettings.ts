@@ -5,7 +5,7 @@ import type { Settings } from "../types";
 import { DEFAULT_STEM_OPTIONS } from "../types";
 import { DEFAULT_FLAG_EXTRA_CHARS, DEFAULT_REPLACEMENTS } from "../lib/standardize";
 
-export const CURRENT_SETTINGS_VERSION = 18;
+export const CURRENT_SETTINGS_VERSION = 20;
 
 export const DEFAULT_SETTINGS: Settings = {
   aiBackend: "ollama",
@@ -37,6 +37,8 @@ export const DEFAULT_SETTINGS: Settings = {
   rekordboxXmlMtime: 0,
   keyNotation: "stored",
   libraryAutoRefresh: false,
+  lyricsStorage: "sidecar",
+  languageAppendComment: false,
   theme: "system",
   visibleColumns: [
     "preview",
@@ -227,6 +229,14 @@ export function migrate(s: Settings, savedVersion: number): Settings {
   // v18: collectionRoot, organizePattern, autoMoveOnSave, snapshotFolder,
   // snapshotOnExit, snapshotKeep. All filled in by the DEFAULT_SETTINGS merge,
   // so no data step is needed.
+  // v19 is reserved for the artwork work (B2) and carries no step here, so the
+  // chain stays valid whichever lands first.
+  // v20: lyricsStorage ("sidecar") and languageAppendComment (false), also
+  // filled in by the merge. The Language column is not added to
+  // visibleColumns: it is opt-in from the column picker.
+  if (savedVersion < 20) {
+    // (no data change)
+  }
   next.settingsVersion = CURRENT_SETTINGS_VERSION;
   return next;
 }

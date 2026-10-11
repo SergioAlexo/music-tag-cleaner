@@ -30,6 +30,9 @@ import { OrganizeDialog, toOrganizeItem } from "./components/OrganizeDialog";
 import { LibraryPage } from "./pages/LibraryPage";
 import { useGenreLoad } from "./hooks/useGenreLoad";
 import { describeRefresh, refreshChangedAnything } from "./lib/libraryRefresh";
+import { buildLanguagePreview, normalizeLanguageCode, type LangSuggestion } from "./lib/language";
+import { describeLyricsTally, tallyLyrics, type LyricsResult } from "./lib/lyrics";
+import { LyricsPanel } from "./components/LyricsPanel";
 import { FACETS, matchesFacet, type Facet, type FacetPick } from "./lib/facets";
 import { useSessionTabs } from "./hooks/useSessionTabs";
 import {
@@ -956,7 +959,11 @@ export default function App() {
           after: r.after,
         }));
       pushHistory({
-        label: previewMode === "rekordboxSync" ? "Rekordbox BPM/Key/Rating into tags" : `Apply ${previewMode}`,
+        label: previewMode === "rekordboxSync"
+          ? "Rekordbox BPM/Key/Rating into tags"
+          : previewMode === "language"
+            ? "Detected languages"
+            : `Apply ${previewMode}`,
         changes,
       });
       await afterWrite(affected);
@@ -1035,6 +1042,92 @@ export default function App() {
             : "Rekordbox has no BPM, key or rating for the selected files (re-export the collection?)",
           "info",
         );
+      }
+    } catch (e) {
+      notify(String(e), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * "Fetch lyrics" from LRCLIB for `paths`, stored per the Lyrics storage
+   * setting (sidecar .lrc/.txt by default). Chunked so the status bar can show
+   * progress; the backend caches every answer, misses included.
+   */
+  const runFetchLyrics = async (paths: string[]) => {
+    if (!paths.length) return notify("No files selected", "info");
+    setBusy(true);
+    try {
+      const storage = settingsRef.current.lyricsStorage;
+      const results: LyricsResult[] = [];
+      const CHUNK = 12;
+      for (let i = 0; i < paths.length; i += CHUNK) {
+        setProgress({
+          done: i,
+          total: paths.length,
+          label: `Fetching lyrics ${Math.min(i + 1, paths.length)} of ${paths.length}`,
+        });
+        results.push(
+          ...(await invoke<LyricsResult[]>("lyrics_fetch", {
+            paths: paths.slice(i, i + CHUNK),
+            storage,
+            overwrite: false,
+          })),
+        );
+      }
+      const tally = tallyLyrics(results);
+      results
+        .filter((r) => r.status === "error")
+        .slice(0, 5)
+        .forEach((r) => notify(`${basename(r.path)}: ${r.detail ?? "lyrics lookup failed"}`, "error"));
+      notify(`Lyrics: ${describeLyricsTally(tally)}`, tally.synced + tally.plain > 0 ? "success" : "info");
+      // Embedding changed the files themselves: refresh their rows and the index.
+      const embedded = results.filter((r) => r.embedded).map((r) => r.path);
+      if (embedded.length) {
+        dropLibraryTags(embedded);
+        await filesApi.refreshPaths(embedded);
+        void reindexLibraryPaths(embedded);
+      }
+    } catch (e) {
+      notify(String(e), "error");
+    } finally {
+      setProgress(null);
+      setBusy(false);
+    }
+  };
+
+  /**
+   * "Detect language": offline suggestions from stored lyrics (else
+   * title + artist), shown in the preview table. Nothing is written until the
+   * user applies it; low-confidence guesses arrive unticked.
+   */
+  const runDetectLanguage = async (paths: string[]) => {
+    if (!paths.length) return notify("No files selected", "info");
+    setBusy(true);
+    try {
+      const { map, errors } = await tagsApi.read(paths);
+      errors.forEach((e) => notify(e, "error"));
+      const suggestions = await invoke<LangSuggestion[]>("detect_languages", { paths });
+      const selected = new Set(paths);
+      const files = filesApi.files.filter((f) => selected.has(f.path));
+      const rows = buildLanguagePreview(files, map, suggestions, {
+        appendComment: settingsRef.current.languageAppendComment,
+      });
+      setTagsMap(map);
+      setPreviewMode("language");
+      setPending(rows);
+      const langRows = rows.filter((r) => r.field === "language");
+      if (!langRows.length) {
+        notify(
+          suggestions.some((s) => s.code)
+            ? "The selected files already have those languages"
+            : "No language could be told. Fetch lyrics first for a better guess.",
+          "info",
+        );
+      } else {
+        const low = langRows.filter((r) => !r.include).length;
+        if (low) notify(`${low} of ${langRows.length} suggestions are low confidence or replace a value, so they start unticked`, "info");
       }
     } catch (e) {
       notify(String(e), "error");
@@ -2047,7 +2140,8 @@ export default function App() {
    */
   const renameFacetEverywhere = async (facet: Facet, oldName: string, newName: string, artist = "") => {
     const meta = FACETS[facet];
-    const trimmed = newName.trim();
+    // Renaming a language to a name or two-letter code stores the canonical code.
+    const trimmed = facet === "language" ? (normalizeLanguageCode(newName) ?? newName.trim()) : newName.trim();
     if (!trimmed || trimmed === oldName) return;
     const pick: FacetPick = { facet, name: oldName, artist };
 
@@ -2257,6 +2351,8 @@ This rewrites the ${meta.singular} tag on ${
               onSeparateStems={withTrack("stems", () => void openStems())}
               onConvertFile={withTrack1("convertFile", (f: AudioFile) => openConvert(f))}
               onMoveToCollection={openOrganize}
+              onFetchLyrics={withTrack1("fetchLyrics", runFetchLyrics)}
+              onDetectLanguage={withTrack1("detectLanguage", runDetectLanguage)}
               onStandardizeArt={withTrack("standardizeArt", standardizeArtwork)}
               onFindArtwork={withTrack1("findArtwork", (paths: string[]) => setArtworkPaths(paths))}
               onJunkArt={withTrack("junkArt", () => setJunkArtOpen(true))}
@@ -2385,6 +2481,8 @@ This rewrites the ${meta.singular} tag on ${
           </Suspense>
         </main>
       </div>
+
+      <LyricsPanel storage={settings.lyricsStorage} onStored={(p, r) => r.embedded && void reindexLibraryPaths([p])} />
 
       <StatusBar
         fileCount={filesApi.files.length}
