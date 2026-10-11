@@ -23,6 +23,7 @@ import { useHistory, type HistoryChange } from "./hooks/useHistory";
 import { useSettings } from "./hooks/useSettings";
 import { useLibraryIndex, mergeWithSession } from "./hooks/useLibraryIndex";
 import { useTags } from "./hooks/useTags";
+import { OrganizeDialog, toOrganizeItem } from "./components/OrganizeDialog";
 import { LibraryPage } from "./pages/LibraryPage";
 import { useGenreLoad } from "./hooks/useGenreLoad";
 import { useSessionTabs } from "./hooks/useSessionTabs";
@@ -912,6 +913,7 @@ export default function App() {
         }));
       pushHistory({ label: `Apply ${previewMode}`, changes });
       await afterWrite(affected);
+      await autoMoveAfterSave(affected);
       if (previewMode === "standardize" && settings.standardizeFilename && lastStandardizeTransformRef.current) {
         await renameFilenamesInPlace(affected, lastStandardizeTransformRef.current);
       }
@@ -1610,6 +1612,75 @@ export default function App() {
     }
   };
 
+  // --- B4: move to collection ------------------------------------------------
+  const [organizePaths, setOrganizePaths] = useState<string[] | null>(null);
+
+  const openOrganize = (paths: string[]) => {
+    if (!paths.length) return notify("No files selected", "info");
+    if (!settingsRef.current.collectionRoot) {
+      return notify("Set a collection folder first (Settings, Organize)", "info");
+    }
+    setOrganizePaths(paths);
+  };
+
+  /** Re-points the session rows, tag cache and index at files that just moved. */
+  const applyMoves = async (moves: { from: string; to: string }[]) => {
+    if (!moves.length) return;
+    const updated = await invoke<AudioFile[]>("list_files", { paths: moves.map((m) => m.to) });
+    const byNew = new Map(updated.map((f) => [f.path, f]));
+    const mapping: Record<string, AudioFile> = {};
+    for (const m of moves) {
+      const info = byNew.get(m.to);
+      if (info) mapping[m.from] = info;
+    }
+    invalidateCovers(Object.keys(mapping));
+    filesApi.remap(mapping);
+    setLibraryTags((prev) => {
+      const next = { ...prev };
+      for (const m of moves) {
+        if (next[m.from]) {
+          next[m.to] = next[m.from];
+          delete next[m.from];
+        }
+      }
+      return next;
+    });
+  };
+
+  const readTagMap = async (paths: string[]) => (await tagsApi.read(paths)).map;
+
+  /** autoMoveOnSave: files just written that sit outside the collection go into it. */
+  const autoMoveAfterSave = async (paths: string[]) => {
+    const s = settingsRef.current;
+    if (!s.autoMoveOnSave || !s.collectionRoot) return;
+    const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+    const root = norm(s.collectionRoot) + "/";
+    const outside = paths.filter((p) => !norm(p).startsWith(root));
+    if (!outside.length) return;
+    try {
+      const tags = await readTagMap(outside);
+      const plan = await invoke<{ from: string; to: string; status: string }[]>("organize_preview", {
+        items: outside.map((p) => toOrganizeItem(p, tags[p])),
+        root: s.collectionRoot,
+        pattern: s.organizePattern,
+      });
+      const moves = plan
+        .filter((e) => e.status === "move" || e.status === "renamed")
+        .map((e) => ({ from: e.from, to: e.to }));
+      if (!moves.length) return;
+      const res = await invoke<{ results: { from: string; to: string; ok: boolean; error?: string }[] }>(
+        "organize_move",
+        { moves },
+      );
+      const ok = res.results.filter((r) => r.ok && r.from !== r.to);
+      res.results.filter((r) => !r.ok).forEach((r) => notify(`${r.from}: ${r.error}`, "error"));
+      await applyMoves(ok.map((r) => ({ from: r.from, to: r.to })));
+      if (ok.length) notify(`Moved ${ok.length} file${ok.length === 1 ? "" : "s"} to the collection`, "success");
+    } catch (e) {
+      notify(String(e), "error");
+    }
+  };
+
   const renameSingleFile = async (path: string, newStem: string) => {
     setBusy(true);
     try {
@@ -2061,6 +2132,7 @@ This rewrites the genre tag on ${
               onConvert={withTrack("convert", () => openConvert())}
               onSeparateStems={withTrack("stems", () => void openStems())}
               onConvertFile={withTrack1("convertFile", (f: AudioFile) => openConvert(f))}
+              onMoveToCollection={openOrganize}
               onStandardizeArt={withTrack("standardizeArt", standardizeArtwork)}
               onStandardizeContainers={withTrack("standardizeContainers", standardizeContainers)}
               onRename={withTrack("renameToStandard", renameToStandard)}
@@ -2211,6 +2283,17 @@ This rewrites the genre tag on ${
           onChunkSizeChange={(size) => void update((prev) => ({ ...prev, manualChunkSize: size }))}
           onCancel={() => setManual(null)}
           onDone={applyManualResults}
+        />
+      )}
+
+      {organizePaths && (
+        <OrganizeDialog
+          paths={organizePaths}
+          settings={settings}
+          readTags={readTagMap}
+          onClose={() => setOrganizePaths(null)}
+          onMoved={applyMoves}
+          notify={notify}
         />
       )}
 

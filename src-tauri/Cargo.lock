@@ -2422,6 +2422,7 @@ version = "0.18.0"
 dependencies = [
  "base64 0.23.1",
  "blake3",
+ "chrono",
  "fatfs",
  "image",
  "lofty",

@@ -125,6 +125,7 @@ interface Props {
   /** Opens the Demucs stem-separation dialog for the selection. */
   onSeparateStems: () => void;
   onConvertFile: (file: AudioFile) => void;
+  onMoveToCollection?: (paths: string[]) => void;
   onStandardizeArt: () => void;
   /** Moves every selected track's tags into its format's canonical container. */
   onStandardizeContainers: () => void;
@@ -207,6 +208,7 @@ export function LibraryPage({
   onConvert,
   onSeparateStems,
   onConvertFile,
+  onMoveToCollection,
   onStandardizeArt,
   onStandardizeContainers,
   onRename,
@@ -723,6 +725,7 @@ export function LibraryPage({
               onAddGenre={onAddGenre}
               onRenameGenre={onRenameGenre}
               onConvertFile={onConvertFile}
+              onMoveToCollection={onMoveToCollection}
               trackIdFormats={tidFormats}
               onDeleteFile={onDeleteFile}
               onRenameFile={onRenameFile}

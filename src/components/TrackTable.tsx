@@ -17,6 +17,7 @@ import {
   Link2,
   Loader2,
   Music,
+  FolderInput,
   Pause,
   Play,
   Repeat,
@@ -227,6 +228,8 @@ interface Props {
   onRenameFile: (path: string, newStem: string) => void;
   /** Open the Convert dialog for one right-clicked file. */
   onConvertFile?: (file: AudioFile) => void;
+  /** B4: opens the Move-to-collection preview for these paths. */
+  onMoveToCollection?: (paths: string[]) => void;
   /** Track ID → distinct loaded formats, for the "also loaded as" link badge. */
   trackIdFormats?: Map<string, string[]>;
   /** Column id of the field currently holding the searchable backup, if enabled. */
@@ -414,6 +417,7 @@ export function TrackTable({
   onDeleteFile,
   onRenameFile,
   onConvertFile,
+  onMoveToCollection,
   trackIdFormats,
   backupFieldId,
   shortcuts,
@@ -2266,6 +2270,13 @@ export function TrackTable({
             if (onConvertFile) {
               items.push(null, { icon: Repeat, label: "Convert…", run: () => onConvertFile(first) });
             }
+          }
+          if (onMoveToCollection) {
+            items.push(null, {
+              icon: FolderInput,
+              label: n > 1 ? `Move ${n} to collection…` : "Move to collection…",
+              run: () => onMoveToCollection(menu.paths),
+            });
           }
           items.push(null, {
             icon: Trash2,

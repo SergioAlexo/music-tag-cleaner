@@ -5,7 +5,7 @@ import type { Settings } from "../types";
 import { DEFAULT_STEM_OPTIONS } from "../types";
 import { DEFAULT_FLAG_EXTRA_CHARS, DEFAULT_REPLACEMENTS } from "../lib/standardize";
 
-export const CURRENT_SETTINGS_VERSION = 15;
+export const CURRENT_SETTINGS_VERSION = 20;
 
 export const DEFAULT_SETTINGS: Settings = {
   aiBackend: "ollama",
@@ -27,6 +27,12 @@ export const DEFAULT_SETTINGS: Settings = {
   djApp: { primary: "other", secondary: "other" },
   lastFolder: "",
   libraryFolder: "",
+  collectionRoot: "",
+  organizePattern: "{genre}/{artist} - {title}.{ext}",
+  autoMoveOnSave: false,
+  snapshotFolder: "",
+  snapshotOnExit: false,
+  snapshotKeep: 10,
   rekordboxXmlPath: "",
   rekordboxXmlMtime: 0,
   theme: "system",
@@ -195,6 +201,9 @@ export function migrate(s: Settings, savedVersion: number): Settings {
   if (savedVersion < 15) {
     next.rekordboxXmlMtime = 0;
   }
+  // v20 (B4): collectionRoot, organizePattern, autoMoveOnSave, snapshotFolder,
+  // snapshotOnExit, snapshotKeep. All filled in by the DEFAULT_SETTINGS merge;
+  // renumber this step if B1-B3 land in a different order.
   next.settingsVersion = CURRENT_SETTINGS_VERSION;
   return next;
 }
