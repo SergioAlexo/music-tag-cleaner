@@ -56,6 +56,7 @@ pub const KEPT_FIELD_KEYS: &[&str] = &[
     "Bpm",
     "IntegerBpm",
     "InitialKey",
+    "Language",
     // Format-specific spellings of Track ID / Original Artist (Vorbis has no
     // mapped Original Artist key; MP4 only stores custom fields as freeform atoms).
     "Unknown(ORIGINALARTIST)",
@@ -85,7 +86,8 @@ CREATE TABLE IF NOT EXISTS library_track (
     rating INTEGER,
     indexed_at INTEGER NOT NULL,
     bpm_tag TEXT,
-    key_tag TEXT
+    key_tag TEXT,
+    language TEXT
 );
 CREATE INDEX IF NOT EXISTS library_track_genre ON library_track(genre);
 CREATE INDEX IF NOT EXISTS library_track_album ON library_track(album);
@@ -135,7 +137,10 @@ CREATE TABLE IF NOT EXISTS rekordbox_track (
 ///
 /// v4: the file's own BPM and key tags are stored (`bpm_tag`, `key_tag`), so
 ///     tracks that are only in the index show them, not just Rekordbox's.
-const INDEX_VERSION: i64 = 4;
+///
+/// v5: the Language tag (TLAN / LANGUAGE) is stored, lowercased, for the
+///     Languages facet.
+const INDEX_VERSION: i64 = 5;
 
 fn stored_index_version(conn: &Connection) -> i64 {
     conn.query_row(
@@ -187,12 +192,16 @@ fn migrate_columns(conn: &Connection) -> Result<(), String> {
             .collect();
         rows
     };
-    for (col, ty) in [("bpm_tag", "TEXT"), ("key_tag", "TEXT")] {
+    for (col, ty) in [("bpm_tag", "TEXT"), ("key_tag", "TEXT"), ("language", "TEXT")] {
         if !have.contains(col) {
             conn.execute(&format!("ALTER TABLE library_track ADD COLUMN {col} {ty}"), [])
                 .map_err(|e| e.to_string())?;
         }
     }
+    // After the column exists (an upgraded database gets it just above), not
+    // in SCHEMA_SQL where it would fail on the old table.
+    conn.execute("CREATE INDEX IF NOT EXISTS library_track_language ON library_track(language)", [])
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -240,8 +249,8 @@ fn upsert_track(
                 path, mtime, size, format, duration_secs, has_backup, has_cover,
                 title, artist, album, album_artist, genre, year, comment,
                 composer, original_artist, track_id, rating, indexed_at,
-                bpm_tag, key_tag
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+                bpm_tag, key_tag, language
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
         )
         .map_err(|e| e.to_string())?;
     stmt.execute(params![
@@ -270,6 +279,9 @@ fn upsert_track(
         now,
         tags.bpm.filter(|b| !b.trim().is_empty()),
         tags.key.filter(|k| !k.trim().is_empty()),
+        tags.language
+            .map(|l| l.trim().to_lowercase())
+            .filter(|l| !l.is_empty()),
     ])
     .map(|_| ())
     .map_err(|e| e.to_string())
@@ -332,6 +344,8 @@ pub struct IndexedTrack {
     /// `key` below, which come from Rekordbox.
     pub tag_bpm: Option<String>,
     pub tag_key: Option<String>,
+    /// The Language tag (ISO 639-2 code when written by this app), lowercased.
+    pub language: Option<String>,
     /// From a Rekordbox XML import (D0), joined in by path — not file-tag
     /// data, so it's `None` for every track until that's been run once.
     pub bpm: Option<f64>,
@@ -670,6 +684,7 @@ fn row_to_track(r: &rusqlite::Row) -> rusqlite::Result<IndexedTrack> {
         rating: r.get::<_, Option<i64>>("rating")?.map(|v| v as u8),
         tag_bpm: r.get("bpm_tag")?,
         tag_key: r.get("key_tag")?,
+        language: r.get("language")?,
         bpm: r.get("rb_bpm")?,
         key: r.get("rb_key")?,
         path,
@@ -790,6 +805,7 @@ pub async fn library_genres(app: AppHandle) -> Result<Vec<GenreCount>, String> {
 pub enum Facet {
     Genre,
     Album,
+    Language,
 }
 
 impl Facet {
@@ -799,6 +815,7 @@ impl Facet {
         match self {
             Facet::Genre => "genre",
             Facet::Album => "album",
+            Facet::Language => "language",
         }
     }
     /// SQL for the second grouping key. Albums are told apart by album artist
@@ -967,6 +984,7 @@ pub async fn retag_field(
                     "comment" => tags.comment = v,
                     "composer" => tags.composer = v,
                     "originalArtist" => tags.original_artist = v,
+                    "language" => tags.language = v,
                     other => {
                         return WriteResult {
                             path: path.clone(),
@@ -1360,6 +1378,66 @@ mod tests {
             .query_row("SELECT bpm_tag, key_tag FROM library_track", [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
         assert_eq!((b.as_str(), k.as_str()), ("128", "8A"));
+        // v5: the language column arrives too, with its index.
+        conn.execute("UPDATE library_track SET language = 'spa'", []).unwrap();
+        let idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'library_track_language'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 1);
+    }
+
+    #[test]
+    fn language_facet_groups_codes_and_has_a_no_language_bucket() {
+        let conn = mem_db();
+        for (path, lang) in [
+            ("a.mp3", Some("spa")),
+            ("b.mp3", Some("spa")),
+            ("c.mp3", Some("eng")),
+            ("d.mp3", Some("  ")),
+            ("e.mp3", None),
+        ] {
+            conn.execute(
+                "INSERT INTO library_track (path, mtime, size, format, language, indexed_at)
+                 VALUES (?1, 1, 1, 'mp3', ?2, 100)",
+                params![path, lang],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            facet_counts(&conn, Facet::Language).unwrap(),
+            vec![fc("", "", 2), fc("spa", "", 2), fc("eng", "", 1)]
+        );
+        assert_eq!(facet_paths(&conn, Facet::Language, "spa", "").unwrap(), vec!["a.mp3", "b.mp3"]);
+        assert_eq!(facet_paths(&conn, Facet::Language, "", "").unwrap(), vec!["d.mp3", "e.mp3"]);
+    }
+
+    #[test]
+    fn a_files_language_tag_is_indexed_lowercased() {
+        let dir = std::env::temp_dir().join(format!("mtc-langidx-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.mp3");
+        let mut bytes = Vec::new();
+        for _ in 0..20 {
+            bytes.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+            bytes.extend(std::iter::repeat(0u8).take(413));
+        }
+        std::fs::write(&path, bytes).unwrap();
+        let p = path.to_str().unwrap();
+        let mut tags = crate::commands::files::read_tags_impl(p).unwrap();
+        tags.language = Some("SPA".into());
+        crate::commands::files::write_tags_blocking(p, tags, false, vec![], true, None).unwrap();
+        let row = crate::commands::files::read_for_index(p).unwrap();
+        let conn = mem_db();
+        let tx = conn.unchecked_transaction().unwrap();
+        upsert_track(&tx, p, 1, 1, row, 100).unwrap();
+        tx.commit().unwrap();
+        let lang: String = conn.query_row("SELECT language FROM library_track", [], |r| r.get(0)).unwrap();
+        assert_eq!(lang, "spa");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import type { TagData } from "../types";
+import { languageName } from "./language";
 
 /**
  * A "facet" is a tag the Library sidebar can browse by: list every value in
@@ -9,7 +10,7 @@ import type { TagData } from "../types";
  * `Facet` (library_index.rs), and nothing in the sidebar, the load hook or the
  * rename flow.
  */
-export type Facet = "genre" | "album";
+export type Facet = "genre" | "album" | "language";
 
 export interface FacetMeta {
   /** Plural, for the tab and empty states. */
@@ -18,11 +19,13 @@ export interface FacetMeta {
   /** What the empty bucket is called ("No genre"). */
   noneLabel: string;
   /** The `TagData` key this facet reads. */
-  tagKey: "genre" | "album";
+  tagKey: "genre" | "album" | "language";
   /** The `retag_field` field name that rewrites it. */
-  retagField: "genre" | "album";
+  retagField: "genre" | "album" | "language";
   /** Whether values are told apart by album artist (two "Greatest Hits"). */
   byAlbumArtist: boolean;
+  /** How a stored value reads in the UI (a language code as its name). Default: as stored. */
+  display?: (name: string) => string;
 }
 
 export const FACETS: Record<Facet, FacetMeta> = {
@@ -42,7 +45,21 @@ export const FACETS: Record<Facet, FacetMeta> = {
     retagField: "album",
     byAlbumArtist: true,
   },
+  language: {
+    label: "Languages",
+    singular: "language",
+    noneLabel: "No language",
+    tagKey: "language",
+    retagField: "language",
+    byAlbumArtist: false,
+    display: languageName,
+  },
 };
+
+/** A facet value as shown to the user. */
+export function facetDisplayName(facet: Facet, name: string): string {
+  return FACETS[facet].display?.(name) ?? name;
+}
 
 /** One entry of a facet list, as `library_facets` returns it. `name === ""` is the "none" bucket. */
 export interface FacetCount {
@@ -69,7 +86,8 @@ export function facetKey(name: string, artist: string): string {
 /** What to show for a pick: its name (and album artist when it has one), or the "none" label. */
 export function facetLabel(pick: FacetPick): string {
   if (!pick.name) return FACETS[pick.facet].noneLabel;
-  return pick.artist ? `${pick.name} — ${pick.artist}` : pick.name;
+  const shown = facetDisplayName(pick.facet, pick.name);
+  return pick.artist ? `${shown} — ${pick.artist}` : shown;
 }
 
 export function samePick(a: FacetPick | null, b: FacetPick | null): boolean {
@@ -86,16 +104,21 @@ export function arrangeFacet(
   sort: FacetSort,
   query: string,
   noneLabel: string,
+  display?: (name: string) => string,
 ): FacetCount[] {
   const q = query.trim().toLowerCase();
   const none = list.filter((f) => !f.name);
   const named = list.filter((f) => f.name);
+  const shown = (f: FacetCount) => display?.(f.name) ?? f.name;
   const byName = (a: FacetCount, b: FacetCount) =>
-    a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }) ||
+    shown(a).localeCompare(shown(b), undefined, { sensitivity: "base", numeric: true }) ||
     a.artist.localeCompare(b.artist, undefined, { sensitivity: "base", numeric: true });
   named.sort(sort === "name" ? byName : (a, b) => b.count - a.count || byName(a, b));
   const matches = (f: FacetCount) =>
-    !q || f.name.toLowerCase().includes(q) || f.artist.toLowerCase().includes(q);
+    !q ||
+    f.name.toLowerCase().includes(q) ||
+    shown(f).toLowerCase().includes(q) ||
+    f.artist.toLowerCase().includes(q);
   // The none bucket matches its own label too, so "no g" finds "No genre".
   const noneShown = !q || noneLabel.toLowerCase().includes(q) ? none : [];
   return [...noneShown, ...named.filter(matches)];
@@ -124,6 +147,8 @@ export function matchesFacet(tag: TagData | undefined, pick: FacetPick): boolean
   const meta = FACETS[pick.facet];
   const name = (tag?.[meta.tagKey] ?? "").trim();
   if (!pick.name) return name === "";
+  // The index stores languages lowercased, so "ES" in a tag is the "es" bucket.
+  if (pick.facet === "language") return name.toLowerCase() === pick.name;
   if ((tag?.[meta.tagKey] ?? "") !== pick.name) return false;
   return !meta.byAlbumArtist || (tag?.albumArtist ?? "").trim() === pick.artist;
 }

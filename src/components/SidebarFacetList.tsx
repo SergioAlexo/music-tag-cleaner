@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Check, Pencil, X } from "lucide-react";
-import { FACETS, facetKey, samePick, type Facet, type FacetCount, type FacetPick } from "../lib/facets";
+import { FACETS, facetDisplayName, facetKey, samePick, type Facet, type FacetCount, type FacetPick } from "../lib/facets";
 import { cn } from "./ui";
 import { VirtualList } from "./VirtualList";
 
@@ -104,10 +104,10 @@ export function SidebarFacetList({
             <button
               onClick={() => onPick(pick)}
               className="flex h-full min-w-0 flex-1 items-center gap-1.5 px-1.5 text-left text-sm"
-              title={isNone ? `Tracks with no ${meta.singular}` : item.artist ? `${item.name} — ${item.artist}` : item.name}
+              title={isNone ? `Tracks with no ${meta.singular}` : item.artist ? `${item.name} — ${item.artist}` : facetDisplayName(facet, item.name)}
             >
               <span className={cn("min-w-0 flex-1 truncate", isNone && "italic text-muted-foreground")}>
-                {isNone ? meta.noneLabel : item.name}
+                {isNone ? meta.noneLabel : facetDisplayName(facet, item.name)}
                 {item.artist && <span className="text-xs text-muted-foreground"> — {item.artist}</span>}
               </span>
               <span className="shrink-0 text-xs text-muted-foreground">{item.count}</span>

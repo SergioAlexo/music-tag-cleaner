@@ -42,6 +42,7 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2
 quick-xml = "0.42.0"
 fatfs = "0.3.6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+whatlang = "0.18.0"
 
 # Windows-only: raw volume access for the FAT32 formatter. Pinned to the same
 # major as the copy Tauri already pulls in, so the tree carries one `windows`.

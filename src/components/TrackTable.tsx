@@ -14,9 +14,11 @@ import {
   Headphones,
   ImageOff,
   ImagePlus,
+  Languages,
   Layers,
   Link2,
   Loader2,
+  Mic2,
   Music,
   FolderInput,
   Pause,
@@ -51,6 +53,7 @@ import { AudioPreview, formatDuration, releasePlayback, takeOverPlayback } from 
 import { Waveform } from "./Waveform";
 import { dominantFamily, fieldHeaderLabel, rawNameTooltip } from "../lib/rawFieldNames";
 import { Combobox } from "./Combobox";
+import { LANGUAGE_OPTIONS, languageFromOption, languageName } from "../lib/language";
 import { Stars } from "./Stars";
 import { Button, cn } from "./ui";
 
@@ -126,6 +129,14 @@ export const ALL_COLUMNS: ColumnDef[] = [
     align: "right",
   },
   { id: "key", label: "Key", width: 70, field: "key", value: (f, t) => keyCell(f, t).text },
+  // Language: stored as an ISO 639-2 code, shown as its name; the editor is a type-ahead of languages.
+  {
+    id: "language",
+    label: "Language",
+    width: 110,
+    field: "language",
+    value: (_f, t) => (t?.language ? languageName(t.language) : ""),
+  },
   { id: "format", label: "Format", width: 72, value: (f) => f.format.toUpperCase() },
   { id: "size", label: "Size", width: 84, value: (f) => formatBytes(f.size), align: "right" },
   { id: "imageInfo", label: "Artwork", width: 150, value: () => "", custom: "imageInfo" },
@@ -248,6 +259,8 @@ interface Props {
   onConvertFile?: (file: AudioFile) => void;
   /** B4: opens the Move-to-collection preview for these paths. */
   onMoveToCollection?: (paths: string[]) => void;
+  onFetchLyrics?: (paths: string[]) => void;
+  onDetectLanguage?: (paths: string[]) => void;
   /** Track ID → distinct loaded formats, for the "also loaded as" link badge. */
   trackIdFormats?: Map<string, string[]>;
   /** Column id of the field currently holding the searchable backup, if enabled. */
@@ -438,6 +451,8 @@ export function TrackTable({
   onRenameFile,
   onConvertFile,
   onMoveToCollection,
+  onFetchLyrics,
+  onDetectLanguage,
   trackIdFormats,
   backupFieldId,
   shortcuts,
@@ -2107,7 +2122,17 @@ export function TrackTable({
                             beginEdit(f.path, c.id, c.id === "filename" ? stemOf(f.filename) : pend ? pend.after : value);
                           }}
                         >
-                          {isEditing && c.field === "genre" ? (
+                          {isEditing && c.field === "language" ? (
+                            <Combobox
+                              value={draft}
+                              options={LANGUAGE_OPTIONS}
+                              allowCustom
+                              autoFocus
+                              placeholder="Type a language…"
+                              onChange={(v) => commitEdit(languageFromOption(v))}
+                              onClose={() => setEditing(null)}
+                            />
+                          ) : isEditing && c.field === "genre" ? (
                             <Combobox
                               value={draft}
                               options={genreOptions}
@@ -2334,6 +2359,21 @@ export function TrackTable({
             if (onConvertFile) {
               items.push(null, { icon: Repeat, label: "Convert…", run: () => onConvertFile(first) });
             }
+          }
+          if (onFetchLyrics || onDetectLanguage) {
+            items.push(null);
+            if (onFetchLyrics)
+              items.push({
+                icon: Mic2,
+                label: n > 1 ? `Fetch lyrics for ${n}` : "Fetch lyrics",
+                run: () => onFetchLyrics(menu.paths),
+              });
+            if (onDetectLanguage)
+              items.push({
+                icon: Languages,
+                label: n > 1 ? `Detect language for ${n}…` : "Detect language…",
+                run: () => onDetectLanguage(menu.paths),
+              });
           }
           if (onMoveToCollection) {
             items.push(null, {

@@ -33,7 +33,11 @@ import {
 export function useLibraryIndex(notify: Notify) {
   const [tracks, setTracks] = useState<IndexedTrack[]>([]);
   const [stats, setStats] = useState<LibraryStats | null>(null);
-  const [facets, setFacets] = useState<Record<Facet, FacetCount[]>>({ genre: [], album: [] });
+  const [facets, setFacets] = useState<Record<Facet, FacetCount[]>>({
+    genre: [],
+    album: [],
+    language: [],
+  });
   const [indexing, setIndexing] = useState(false);
   const [progress, setProgress] = useState<IndexProgress | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -43,13 +47,14 @@ export function useLibraryIndex(notify: Notify) {
   const refreshStats = useCallback(async () => {
     try {
       // Independent queries — issued together rather than one after the other.
-      const [nextStats, genre, album] = await Promise.all([
+      const [nextStats, genre, album, language] = await Promise.all([
         invoke<LibraryStats>("library_stats"),
         invoke<FacetCount[]>("library_facets", { facet: "genre" }),
         invoke<FacetCount[]>("library_facets", { facet: "album" }),
+        invoke<FacetCount[]>("library_facets", { facet: "language" }),
       ]);
       setStats(nextStats);
-      setFacets({ genre, album });
+      setFacets({ genre, album, language });
     } catch {
       // A missing/locked database is not worth a toast on every poll — the
       // Settings card shows "not indexed yet", which is the honest state.

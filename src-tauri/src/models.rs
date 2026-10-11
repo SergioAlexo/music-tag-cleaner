@@ -42,6 +42,9 @@ pub struct TagData {
     /// Musical key as written in the file (TKEY / `initialkey` / `INITIALKEY`),
     /// in whatever notation the writing app used ("8A", "Am", "Fm"...).
     pub key: Option<String>,
+    /// Language of the vocals as an ISO 639-2 code (`spa`, `eng`, `zxx` for
+    /// instrumentals): ID3 TLAN, Vorbis `LANGUAGE`.
+    pub language: Option<String>,
     pub has_cover_art: bool,
     /// Full dump of every text field in the tag, keyed by a canonical
     /// (format-independent) name like `TrackTitle` or `Unknown(FOO)`.

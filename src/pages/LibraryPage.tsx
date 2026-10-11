@@ -138,6 +138,8 @@ interface Props {
   onSeparateStems: () => void;
   onConvertFile: (file: AudioFile) => void;
   onMoveToCollection?: (paths: string[]) => void;
+  onFetchLyrics?: (paths: string[]) => void;
+  onDetectLanguage?: (paths: string[]) => void;
   onStandardizeArt: () => void;
   /** Moves every selected track's tags into its format's canonical container. */
   onStandardizeContainers: () => void;
@@ -225,6 +227,8 @@ export function LibraryPage({
   onSeparateStems,
   onConvertFile,
   onMoveToCollection,
+  onFetchLyrics,
+  onDetectLanguage,
   onStandardizeArt,
   onStandardizeContainers,
   onRename,
@@ -790,6 +794,8 @@ export function LibraryPage({
               onRenameGenre={onRenameGenre}
               onConvertFile={onConvertFile}
               onMoveToCollection={onMoveToCollection}
+              onFetchLyrics={onFetchLyrics}
+              onDetectLanguage={onDetectLanguage}
               trackIdFormats={tidFormats}
               onDeleteFile={onDeleteFile}
               onRenameFile={onRenameFile}

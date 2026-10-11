@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Pause, Play } from "lucide-react";
+import { publishNowPlaying, publishPaused } from "../lib/nowPlaying";
 import { cn } from "./ui";
 
 // Only one thing plays at a time across the whole table — a row's own
@@ -95,6 +96,12 @@ export function AudioPreview({
   }, [path]);
 
   const duration = loadedDuration || durationSecs || 0;
+
+  // Tell the lyrics panel (and anything else following playback) where we are.
+  useEffect(() => {
+    if (playing) publishNowPlaying({ path, timeMs: Math.round(time * 1000), playing: true });
+    else publishPaused(path);
+  }, [playing, time, path]);
 
   const pause = () => {
     audioRef.current?.pause();

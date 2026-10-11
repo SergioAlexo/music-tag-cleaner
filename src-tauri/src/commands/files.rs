@@ -461,6 +461,7 @@ fn tag_data_of_tag(tag: &Tag) -> TagData {
         rating: read_rating(tag),
         bpm: bpm_of(tag),
         key: get_text(tag, &ItemKey::InitialKey),
+        language: get_text(tag, &ItemKey::Language),
         has_cover_art: !tag.pictures().is_empty(),
         all_fields: Default::default(),
     };
@@ -764,6 +765,7 @@ fn is_curated_key(key: &ItemKey) -> bool {
             | ItemKey::Bpm
             | ItemKey::IntegerBpm
             | ItemKey::InitialKey
+            | ItemKey::Language
     ) || matches!(key, ItemKey::Unknown(k)
         if matches!(
             k.strip_prefix(MP4_FREEFORM_PREFIX).unwrap_or(k.as_str()),
@@ -1017,6 +1019,7 @@ pub(crate) fn write_tags_blocking(
     let new_bpm = tags.bpm.as_deref().map(|v| bpm_for_format(tag_type, v));
     write_field(&mut tag, &bpm_keys(tag_type), &old.bpm, &new_bpm);
     write_field(&mut tag, &[ItemKey::InitialKey], &old.key, &tags.key);
+    write_field(&mut tag, &[ItemKey::Language], &old.language, &tags.language);
 
     // 4. Searchable backup — only into a field that is empty before and after.
     if let Some(key) = backup_key {
@@ -1179,7 +1182,7 @@ pub async fn write_raw_field(path: String, field_key: String, value: String) -> 
     run_blocking(move || write_raw_field_blocking(&path, &field_key, &value)).await
 }
 
-fn write_raw_field_blocking(path: &str, field_key: &str, value: &str) -> Result<(), String> {
+pub(crate) fn write_raw_field_blocking(path: &str, field_key: &str, value: &str) -> Result<(), String> {
     let mut tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
     let tag_type = tagged.file_type().primary_tag_type();
     let value = value.trim();
@@ -2804,6 +2807,7 @@ mod tests {
             rating: Some(4),
             bpm: Some("128".into()),
             key: Some("8A".into()),
+            language: Some("spa".into()),
             ..TagData::default()
         }
     }
@@ -2826,6 +2830,7 @@ mod tests {
             ("rating", t.rating.map(|r| r.to_string())),
             ("bpm", t.bpm.clone()),
             ("key", t.key.clone()),
+            ("language", t.language.clone()),
         ]
     }
 
