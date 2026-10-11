@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { requestFocusPath } from "./lib/focusPath";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { audioDir, join as joinPath } from "@tauri-apps/api/path";
 import { listen } from "@tauri-apps/api/event";
@@ -2153,6 +2154,10 @@ This rewrites the genre tag on ${
               tags={libraryTags}
               notify={notify}
               onDelete={deleteDuplicateFiles}
+              onShowInLibrary={(path) => {
+                setPage("library");
+                requestFocusPath(path);
+              }}
               onInspect={(path) => {
                 const file = filesApi.files.find((f) => f.path === path);
                 if (file) inspect(file);

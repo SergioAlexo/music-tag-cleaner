@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Loader2 } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 import type { CueData, CuePoint, LoopPoint } from "../types";
 import { cn } from "./ui";
 
@@ -57,8 +57,14 @@ export function Waveform({
 }) {
   const [peaks, setPeaks] = useState<number[] | null>(cache[path] ?? null);
 
+  // Bumped by the "regenerate" button to re-run the fetch below.
+  const [retry, setRetry] = useState(0);
+  const [regenerating, setRegenerating] = useState(false);
+
   useEffect(() => {
-    if (cache[path]) {
+    // `retry > 0` bypasses the in-memory cache. Empty/failed results are never
+    // stored there, so a failure can't be pinned for the session.
+    if (cache[path] && retry === 0) {
       setPeaks(cache[path]);
       return;
     }
@@ -66,16 +72,21 @@ export function Waveform({
     setPeaks(null);
     invoke<number[]>("get_waveform", { path })
       .then((p) => {
-        cache[path] = p;
+        if (p.length) cache[path] = p;
+        else delete cache[path];
         if (!cancelled) setPeaks(p);
       })
       .catch(() => {
+        delete cache[path];
         if (!cancelled) setPeaks([]);
+      })
+      .finally(() => {
+        if (!cancelled) setRegenerating(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [path]);
+  }, [path, retry]);
 
   if (peaks === null) {
     return (
@@ -88,12 +99,48 @@ export function Waveform({
     );
   }
   if (peaks.length === 0) {
+    // No peaks: keep a flat bar that still seeks (by fraction of duration, which
+    // the caller resolves) so rewinding works even when generation failed.
+    const seekFromBar = (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!onSeek) return;
+      const r = e.currentTarget.getBoundingClientRect();
+      if (r.width > 0) onSeek(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)));
+    };
     return (
-      <div
-        className={cn("flex items-center justify-center text-xs text-muted-foreground", className)}
-        style={{ height }}
-      >
-        No waveform
+      <div className={cn("flex items-center gap-1.5", className)} style={{ height }}>
+        <div
+          className={cn("relative h-3 min-w-0 flex-1 rounded-sm bg-primary/20", onSeek && "cursor-pointer")}
+          style={{ touchAction: onSeek ? "none" : undefined }}
+          title="No waveform data. Click to seek."
+          onPointerDown={(e) => {
+            if (!onSeek || e.button !== 0) return;
+            e.currentTarget.setPointerCapture(e.pointerId);
+            seekFromBar(e);
+          }}
+          onPointerMove={(e) => {
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) seekFromBar(e);
+          }}
+          onPointerUp={(e) => {
+            if (e.currentTarget.hasPointerCapture(e.pointerId))
+              e.currentTarget.releasePointerCapture(e.pointerId);
+          }}
+        >
+          {progress !== undefined && progress >= 0 && progress <= 1 && (
+            <div className="absolute inset-y-0 w-0.5 bg-primary" style={{ left: `${progress * 100}%` }} />
+          )}
+        </div>
+        <button
+          type="button"
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent"
+          title="Regenerate waveform"
+          disabled={regenerating}
+          onClick={() => {
+            setRegenerating(true);
+            setRetry((n) => n + 1);
+          }}
+        >
+          <RefreshCw className={cn("h-3 w-3", regenerating && "animate-spin")} />
+        </button>
       </div>
     );
   }
