@@ -42,6 +42,9 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2
 quick-xml = "0.42.0"
 fatfs = "0.3.6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# D1 AI-control bridge: loopback-only HTTP (tiny_http has no async runtime or TLS) and an OS RNG for the bearer token.
+tiny_http = "0.12"
+getrandom = "0.3"
 whatlang = "0.18.0"
 
 # Windows-only: raw volume access for the FAT32 formatter. Pinned to the same

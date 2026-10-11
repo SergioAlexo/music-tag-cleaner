@@ -299,6 +299,8 @@ export interface Settings {
   keyNotation: KeyNotation;
   /** Re-run the incremental library scan whenever the window regains focus (at most once a minute). Off by default. */
   libraryAutoRefresh: boolean;
+  /** D1: run the local AI-control bridge (127.0.0.1 only, bearer token). Off by default. */
+  aiControl: boolean;
   /** Where fetched lyrics go: a sidecar .lrc/.txt next to the audio, the file's own lyrics tag, or both. */
   lyricsStorage: LyricsStorage;
   /** Also append `#lang-xx` to Comment when language suggestions are applied (Rekordbox cannot show TLAN). */

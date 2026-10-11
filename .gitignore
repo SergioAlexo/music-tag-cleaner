@@ -6,3 +6,4 @@ src-tauri/gen/schemas
 
 src-tauri/shell-ext/target/
 src-tauri/windows/sparse/out/
+mcp/target

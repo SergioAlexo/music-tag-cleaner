@@ -70,6 +70,7 @@ describe("migrate", () => {
     expect(next.lyricsStorage).toBe("sidecar");
     expect(next.languageAppendComment).toBe(false);
     expect(next.visibleColumns).toEqual(["title", "artist"]);
-    expect(next.settingsVersion).toBe(20);
+    expect(next.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
+    expect(next.aiControl).toBe(false);
   });
 });
