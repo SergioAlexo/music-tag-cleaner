@@ -21,7 +21,7 @@ import type { ActionCtx, ActionRegistry, JsonSchema } from "./actions";
 import { NO_PARAMS } from "./actions";
 import type { FacetPick } from "./facets";
 
-export const PAGES = ["library", "duplicates", "ytmusic", "components", "settings", "logs"] as const;
+export const PAGES = ["library", "duplicates", "playlists", "ytmusic", "components", "settings", "logs"] as const;
 export type AppPage = (typeof PAGES)[number];
 
 export interface AppEnv {
@@ -832,6 +832,98 @@ export function registerAppActions(reg: ActionRegistry, get: () => AppEnv): void
     run: (p: { paths: string[] }) => withSelection(p.paths, () => env().h.backupArchive()).then(() => ({ done: true })),
   });
 
+  // ---- DJ playlists (C1) -----------------------------------------------------
+  // Straight to the dj_* commands: they don't depend on any App state. Writes
+  // are all `dangerous` because the same action can target Mixxx's database.
+
+  const SRC: JsonSchema = { type: "string", enum: ["rekordbox", "mixxx", "mtc"], description: "rekordbox (read-only) | mixxx | mtc (Music Tag Cleaner's own)" };
+  const WSRC: JsonSchema = { type: "string", enum: ["mixxx", "mtc"], description: "mixxx (needs Mixxx closed; backed up first) | mtc" };
+  const loadSnap = (source: string) => invoke<DjSnapshotLite>("dj_load", { source });
+
+  reg.register({
+    id: "djplaylists.list",
+    title: "List playlists of Rekordbox, Mixxx or Music Tag Cleaner",
+    description: "Tree of folders, playlists, smart playlists and crates with ids and track counts.",
+    params: obj({ source: SRC }, ["source"]),
+    readOnly: true,
+    run: async (p: { source: string }) => {
+      const s = await loadSnap(p.source);
+      return s.nodes.map((n) => ({ id: n.id, parentId: n.parentId, name: n.name, kind: n.kind, tracks: n.count }));
+    },
+  });
+
+  reg.register({
+    id: "djplaylists.tracks",
+    title: "List the tracks of a playlist",
+    description: "Static playlists only (a Rekordbox smart playlist's members are computed in the Playlists page). Capped at 2000.",
+    params: obj({ source: SRC, id: str("Playlist id from djplaylists.list") }, ["source", "id"]),
+    readOnly: true,
+    run: async (p: { source: string; id: string }) => {
+      const s = await loadSnap(p.source);
+      const ids = s.members[p.id];
+      if (!ids) throw new Error("No stored members for that id (folder, smart playlist, or unknown).");
+      const byId = new Map(s.tracks.map((t) => [t.id, t]));
+      return ids.slice(0, 2000).map((id) => {
+        const t = byId.get(id);
+        return { path: t?.path ?? id, title: t?.title, artist: t?.artist };
+      });
+    },
+  });
+
+  reg.register({
+    id: "djplaylists.create",
+    title: "Create a playlist (or folder / crate)",
+    description: "kind: playlist | folder (mtc only) | crate (mixxx only). Tracks are matched by file path; unmatched paths are returned.",
+    params: obj(
+      { source: WSRC, name: str(), kind: { type: "string", enum: ["playlist", "folder", "crate"] }, paths: { type: "array", items: { type: "string" }, maxItems: 20000 } },
+      ["source", "name"],
+    ),
+    dangerous: true,
+    run: async (p: { source: string; name: string; kind?: string; paths?: string[] }) => {
+      const r = await invoke<unknown[]>("dj_apply", { source: p.source, ops: [{ op: "create", name: p.name, kind: p.kind ?? "playlist", paths: p.paths ?? [] }] });
+      env().notify(`Created playlist “${p.name}”`, "success", { silent: true });
+      return r[0];
+    },
+  });
+
+  reg.register({
+    id: "djplaylists.setTracks",
+    title: "Replace a playlist's tracks",
+    params: obj({ source: WSRC, id: str(), paths: { type: "array", items: { type: "string" }, maxItems: 20000 } }, ["source", "id", "paths"]),
+    dangerous: true,
+    run: async (p: { source: string; id: string; paths: string[] }) =>
+      (await invoke<unknown[]>("dj_apply", { source: p.source, ops: [{ op: "setTracks", id: p.id, paths: p.paths }] }))[0],
+  });
+
+  reg.register({
+    id: "djplaylists.rename",
+    title: "Rename a playlist",
+    params: obj({ source: WSRC, id: str(), name: str() }, ["source", "id", "name"]),
+    dangerous: true,
+    run: async (p: { source: string; id: string; name: string }) =>
+      (await invoke<unknown[]>("dj_apply", { source: p.source, ops: [{ op: "rename", id: p.id, name: p.name }] }))[0],
+  });
+
+  reg.register({
+    id: "djplaylists.delete",
+    title: "Delete a playlist, folder or crate",
+    description: "Tracks themselves are never touched. A folder takes its contents with it.",
+    params: obj({ source: WSRC, id: str() }, ["source", "id"]),
+    dangerous: true,
+    run: async (p: { source: string; id: string }) =>
+      (await invoke<unknown[]>("dj_apply", { source: p.source, ops: [{ op: "delete", id: p.id }] }))[0],
+  });
+
+  reg.register({
+    id: "djplaylists.open",
+    title: "Open the Playlists page",
+    params: NO_PARAMS,
+    run: () => {
+      env().setPage("playlists");
+      return { page: "playlists" };
+    },
+  });
+
   // ---- scripting -----------------------------------------------------------
 
   reg.register({
@@ -854,4 +946,11 @@ export function registerAppActions(reg: ActionRegistry, get: () => AppEnv): void
     run: (p: { steps: { action: string; params?: unknown; continueOnError?: boolean }[]; dryRun?: boolean }, ctx) =>
       reg.runScript(p.steps, { dryRun: p.dryRun }, ctx),
   });
+}
+
+/** The slice of a `dj_load` snapshot the playlist actions read. */
+interface DjSnapshotLite {
+  nodes: { id: string; parentId: string | null; name: string; kind: string; count: number }[];
+  tracks: { id: string; path: string; title: string; artist: string }[];
+  members: Record<string, string[]>;
 }
