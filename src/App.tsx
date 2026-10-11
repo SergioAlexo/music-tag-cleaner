@@ -88,6 +88,12 @@ const ManualAIDialog = lazy(() =>
 const ConvertDialog = lazy(() =>
   import("./components/ConvertDialog").then((m) => ({ default: m.ConvertDialog })),
 );
+const ArtworkDialog = lazy(() =>
+  import("./components/ArtworkDialog").then((m) => ({ default: m.ArtworkDialog })),
+);
+const JunkArtDialog = lazy(() =>
+  import("./components/ArtworkDialog").then((m) => ({ default: m.JunkArtDialog })),
+);
 const StemsDialog = lazy(() =>
   import("./components/StemsDialog").then((m) => ({ default: m.StemsDialog })),
 );
@@ -442,6 +448,8 @@ export default function App() {
   // FFmpeg-backed conversion (v0.10). `ffmpegInfo` gates the Convert dialog.
   const [ffmpegInfo, setFfmpegInfo] = useState<FfmpegInfo | null>(null);
   const [convertOpen, setConvertOpen] = useState(false);
+  const [artworkPaths, setArtworkPaths] = useState<string[] | null>(null);
+  const [junkArtOpen, setJunkArtOpen] = useState(false);
   /** Paths queued for stem separation; non-null means the dialog is open. */
   const [stemsPaths, setStemsPaths] = useState<string[] | null>(null);
   const [demucsInfo, setDemucsInfo] = useState<DemucsInfo | null>(null);
@@ -1561,6 +1569,37 @@ export default function App() {
     }
   };
 
+  /** Bulk "Remove art" for the junk-art dialog: one undoable history entry. */
+  const removeArtForPaths = async (paths: string[]) => {
+    const changes: HistoryChange[] = [];
+    for (const path of paths) {
+      try {
+        const before = await invoke<string | null>("read_cover_art", { path });
+        if (!before) continue;
+        await invoke("remove_cover_art", { path });
+        changes.push({ path, field: "__coverArt", before, after: "" });
+      } catch (e) {
+        notify(`${basename(path)}: ${e}`, "error");
+      }
+    }
+    if (changes.length) {
+      invalidateCovers(changes.map((c) => c.path));
+      imageInfoApi.invalidate(changes.map((c) => c.path));
+      pushHistory({ label: `Remove artwork (${changes.length})`, changes });
+    }
+    notify(
+      changes.length ? `Removed artwork from ${changes.length} track${changes.length === 1 ? "" : "s"}` : "Nothing to remove",
+      changes.length ? "success" : "info",
+    );
+  };
+
+  const artworkApplied = (changes: HistoryChange[], label: string) => {
+    invalidateCovers(changes.map((c) => c.path));
+    imageInfoApi.invalidate(changes.map((c) => c.path));
+    pushHistory({ label, changes });
+    notify(`Artwork updated on ${changes.length} track${changes.length === 1 ? "" : "s"}`, "success");
+  };
+
   const removeCoverArt = async (file: AudioFile) => {
     try {
       const before = await invoke<string | null>("read_cover_art", { path: file.path });
@@ -2219,6 +2258,8 @@ This rewrites the ${meta.singular} tag on ${
               onConvertFile={withTrack1("convertFile", (f: AudioFile) => openConvert(f))}
               onMoveToCollection={openOrganize}
               onStandardizeArt={withTrack("standardizeArt", standardizeArtwork)}
+              onFindArtwork={withTrack1("findArtwork", (paths: string[]) => setArtworkPaths(paths))}
+              onJunkArt={withTrack("junkArt", () => setJunkArtOpen(true))}
               onStandardizeContainers={withTrack("standardizeContainers", standardizeContainers)}
               onRename={withTrack("renameToStandard", renameToStandard)}
               onClearFields={withTrack1("clearFields", runClearFields)}
@@ -2375,6 +2416,28 @@ This rewrites the ${meta.singular} tag on ${
         />
       )}
 
+      {artworkPaths && (
+        <Suspense fallback={null}>
+          <ArtworkDialog
+            paths={artworkPaths}
+            durations={Object.fromEntries(filesApi.files.map((f) => [f.path, f.durationSecs]))}
+            artworkMaxDim={settings.artworkMaxDim}
+            artworkJpegQuality={settings.artworkJpegQuality}
+            onApplied={artworkApplied}
+            onClose={() => setArtworkPaths(null)}
+          />
+        </Suspense>
+      )}
+      {junkArtOpen && (
+        <Suspense fallback={null}>
+          <JunkArtDialog
+            onRemoveArt={removeArtForPaths}
+            onFindArt={(paths) => setArtworkPaths(paths)}
+            notify={notify}
+            onClose={() => setJunkArtOpen(false)}
+          />
+        </Suspense>
+      )}
       {organizePaths && (
         <OrganizeDialog
           paths={organizePaths}
