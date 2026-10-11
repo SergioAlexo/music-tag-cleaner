@@ -28,6 +28,8 @@ import { buildRekordboxSyncPreview } from "./lib/rekordboxSync";
 import { useTags } from "./hooks/useTags";
 import { LibraryPage } from "./pages/LibraryPage";
 import { useGenreLoad } from "./hooks/useGenreLoad";
+import { describeRefresh, refreshChangedAnything } from "./lib/libraryRefresh";
+import { FACETS, matchesFacet, type Facet, type FacetPick } from "./lib/facets";
 import { useSessionTabs } from "./hooks/useSessionTabs";
 import {
   applyCapitalization,
@@ -247,6 +249,29 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
 
+  // Opt-in (`libraryAutoRefresh`): re-scan when the window regains focus, which
+  // is when new downloads are most likely to be waiting. Throttled, and quiet
+  // unless the scan actually found something. A file watcher would need a new
+  // native dependency for little gain over this on a folder you edit elsewhere.
+  const refreshFromDisk = libraryIndex.refreshFromDisk;
+  useEffect(() => {
+    if (!settings.libraryAutoRefresh || !settings.libraryFolder) return;
+    let last = Date.now();
+    const onFocus = () => {
+      if (Date.now() - last < 60_000) return;
+      last = Date.now();
+      refreshFromDisk()
+        .then((s) => {
+          if (s && refreshChangedAnything(s)) {
+            notify(`Library refreshed: ${describeRefresh(s)}`, "info", { silent: true });
+          }
+        })
+        .catch(() => {});
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [settings.libraryAutoRefresh, settings.libraryFolder, refreshFromDisk, notify]);
+
   const chooseLibraryFolder = async (folder: string) => {
     setLibraryPromptOpen(false);
     try {
@@ -376,17 +401,17 @@ export default function App() {
     releasePreview,
   });
 
-  // The three ways a library-genre click can land (the page picks which).
-  const loadLibraryGenre = async (genre: string) => {
-    if (await releasePreview()) await genreLoad.loadGenre(genre);
+  // The three ways a library genre / album click can land (the page picks which).
+  const loadLibraryFacet = async (pick: FacetPick) => {
+    if (await releasePreview()) await genreLoad.loadFacet(pick);
   };
-  const openGenreInNewTab = async (genre: string) => {
-    if (await sessionTabs.openNewTab()) await genreLoad.loadGenre(genre);
+  const openFacetInNewTab = async (pick: FacetPick) => {
+    if (await sessionTabs.openNewTab()) await genreLoad.loadFacet(pick);
   };
-  const replaceWithGenre = async (genre: string) => {
+  const replaceWithFacet = async (pick: FacetPick) => {
     if (!(await releasePreview())) return;
     sessionTabs.resetHistory();
-    await genreLoad.loadGenre(genre);
+    await genreLoad.loadFacet(pick);
   };
 
   /** Read-only diff of every change applied so far this session, reusing the preview table. */
@@ -1910,37 +1935,40 @@ export default function App() {
    * rows; loaded tracks go through the normal edit path so undo still covers
    * them.
    */
-  const renameGenreEverywhere = async (oldName: string, newName: string) => {
+  const renameFacetEverywhere = async (facet: Facet, oldName: string, newName: string, artist = "") => {
+    const meta = FACETS[facet];
     const trimmed = newName.trim();
     if (!trimmed || trimmed === oldName) return;
+    const pick: FacetPick = { facet, name: oldName, artist };
 
     let paths: string[] = [];
     try {
-      paths = await libraryIndex.pathsWithGenre(oldName);
+      paths = await libraryIndex.pathsWithFacet(facet, oldName, artist);
     } catch {
       paths = [];
     }
     // Loaded-but-not-yet-indexed tracks matter too — they're the ones most
-    // likely to have just been given this genre by hand.
+    // likely to have just been given this value by hand.
     const loaded = Object.entries(libraryTags)
-      .filter(([, t]) => t.genre === oldName)
+      .filter(([, t]) => matchesFacet(t, pick))
       .map(([path]) => path);
     const all = [...new Set([...paths, ...loaded])];
+    const what = artist ? `"${oldName}" (${artist})` : `"${oldName}"`;
     if (!all.length) {
-      notify(`Nothing in the collection uses "${oldName}"`, "info");
+      notify(`Nothing in the collection uses ${what}`, "info");
       return;
     }
 
     const ok = await confirm(
       `${all.length} track${all.length === 1 ? "" : "s"} in your collection ` +
-        `${all.length === 1 ? "uses" : "use"} "${oldName}". Rename ${
+        `${all.length === 1 ? "uses" : "use"} ${what}. Rename ${
           all.length === 1 ? "it" : "them"
         } to "${trimmed}"?
 
-This rewrites the genre tag on ${
+This rewrites the ${meta.singular} tag on ${
           all.length === 1 ? "that file" : "those files"
         }.`,
-      { title: "Rename Genre", kind: "warning" },
+      { title: `Rename ${meta.singular[0].toUpperCase()}${meta.singular.slice(1)}`, kind: "warning" },
     );
     if (!ok) return;
 
@@ -1950,11 +1978,11 @@ This rewrites the genre tag on ${
 
     setBusy(true);
     try {
-      if (inSession.length) await editField(inSession, "genre", trimmed);
+      if (inSession.length) await editField(inSession, meta.retagField, trimmed);
       if (offSession.length) {
         const results = await invoke<{ path: string; error: string | null }[]>("retag_field", {
           paths: offSession,
-          field: "genre",
+          field: meta.retagField,
           value: trimmed,
           backup: settingsRef.current.backupBeforeChanges,
           preserveArt: settingsRef.current.preserveCoverArt,
@@ -1965,11 +1993,11 @@ This rewrites the genre tag on ${
         const failed = results.filter((r) => r.error);
         failed.forEach((r) => notify(`${basename(r.path)}: ${r.error}`, "error"));
         notify(
-          `Renamed "${oldName}" to "${trimmed}" on ${all.length - failed.length} track(s)`,
+          `Renamed ${what} to "${trimmed}" on ${all.length - failed.length} track(s)`,
           "success",
         );
       } else {
-        notify(`Renamed "${oldName}" to "${trimmed}"`, "success");
+        notify(`Renamed ${what} to "${trimmed}"`, "success");
       }
       await libraryIndex.refresh();
     } catch (e) {
@@ -1978,6 +2006,8 @@ This rewrites the genre tag on ${
       setBusy(false);
     }
   };
+  const renameGenreEverywhere = (oldName: string, newName: string) =>
+    renameFacetEverywhere("genre", oldName, newName);
 
   /**
    * Detect Genres found several raw spellings that normalize to the same
@@ -2067,10 +2097,12 @@ This rewrites the genre tag on ${
             <LibraryPage
               filesApi={filesApi}
               libraryTags={libraryTags}
-              libraryGenres={libraryIndex.genres}
-              onLoadGenre={(genre) => void loadLibraryGenre(genre)}
-              onOpenGenreInNewTab={(genre) => void openGenreInNewTab(genre)}
-              onReplaceWithGenre={(genre) => void replaceWithGenre(genre)}
+              libraryIndex={libraryIndex}
+              onLoadFacet={(pick) => void loadLibraryFacet(pick)}
+              onOpenFacetInNewTab={(pick) => void openFacetInNewTab(pick)}
+              onReplaceWithFacet={(pick) => void replaceWithFacet(pick)}
+              onAddTracks={(paths) => void genreLoad.addTracks(paths)}
+              onRenameFacet={renameFacetEverywhere}
               tabs={sessionTabs.views}
               activeTabId={sessionTabs.activeId}
               tabsLocked={busy || filesApi.scanning || aiRunning || backupRunning}

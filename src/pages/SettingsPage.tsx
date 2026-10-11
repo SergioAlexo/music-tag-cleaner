@@ -496,6 +496,18 @@ function LibraryIndexCard({
 
         <div className="mt-3 border-t pt-3">
           <Row
+            label="Refresh the library when the window gets focus"
+            hint="Re-scans the Library folder for new, changed and removed files whenever you switch back to the app (at most once a minute). Cheap: unchanged files are skipped without being opened. The sidebar's Refresh button does the same on demand."
+          >
+            <Toggle
+              checked={settings.libraryAutoRefresh}
+              onChange={(v) => onUpdate((prev) => ({ ...prev, libraryAutoRefresh: v }))}
+            />
+          </Row>
+        </div>
+
+        <div className="mt-3 border-t pt-3">
+          <Row
             label="Genre click in a hand-built batch"
             hint="What clicking a genre in the Library sidebar does when you loaded the files yourself (folder, files, drop). Empty and genre sessions always just open the genre."
           >

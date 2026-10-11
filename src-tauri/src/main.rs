@@ -219,6 +219,8 @@ fn main() {
             commands::library_index::library_stats,
             commands::library_index::library_genres,
             commands::library_index::library_paths_with_genre,
+            commands::library_index::library_facets,
+            commands::library_index::library_paths_with_facet,
             commands::library_index::retag_field,
             commands::library_index::reindex_library_paths,
             commands::demucs::demucs_info,
