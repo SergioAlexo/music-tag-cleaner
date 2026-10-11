@@ -37,6 +37,23 @@ describe("migrate", () => {
 
   it("leaves an up-to-date mtime alone", () => {
     const current = { ...DEFAULT_SETTINGS, rekordboxXmlMtime: 99 };
-    expect(migrate(current, 15).rekordboxXmlMtime).toBe(99);
+    expect(migrate(current, 16).rekordboxXmlMtime).toBe(99);
+  });
+
+  it("v16 re-imports once for ratings and shows BPM/Key after Rating", () => {
+    const old = {
+      ...DEFAULT_SETTINGS,
+      rekordboxXmlMtime: 99,
+      visibleColumns: ["preview", "title", "genre", "rating", "trackId"],
+    };
+    const next = migrate(old, 15);
+    expect(next.rekordboxXmlMtime).toBe(0);
+    expect(next.visibleColumns).toEqual(["preview", "title", "genre", "rating", "bpm", "key", "trackId"]);
+    expect(next.keyNotation).toBe("stored");
+  });
+
+  it("v16 keeps a BPM column the user already placed", () => {
+    const old = { ...DEFAULT_SETTINGS, visibleColumns: ["bpm", "title", "rating"] };
+    expect(migrate(old, 15).visibleColumns).toEqual(["bpm", "title", "rating", "key"]);
   });
 });

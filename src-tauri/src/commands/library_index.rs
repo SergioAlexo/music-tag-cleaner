@@ -53,6 +53,14 @@ pub const KEPT_FIELD_KEYS: &[&str] = &[
     "Composer",
     "Popularimeter",
     "Unknown(TRACKID)",
+    "Bpm",
+    "IntegerBpm",
+    "InitialKey",
+    // Format-specific spellings of Track ID / Original Artist (Vorbis has no
+    // mapped Original Artist key; MP4 only stores custom fields as freeform atoms).
+    "Unknown(ORIGINALARTIST)",
+    "Unknown(----:com.apple.iTunes:TRACKID)",
+    "Unknown(----:com.apple.iTunes:ORIGINALARTIST)",
 ];
 
 const SCHEMA_SQL: &str = "

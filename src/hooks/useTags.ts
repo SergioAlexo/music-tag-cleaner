@@ -256,6 +256,8 @@ export function useTags() {
       const clearedRaw = new Set<string>();
       for (const r of included) {
         if (r.raw) clearedRaw.add(r.field);
+        // Rating is a number on the wire (u8); every other field is text.
+        else if (r.field === "rating") tags.rating = Number(r.after) || 0;
         else (tags as unknown as Record<string, string>)[r.field] = r.after;
       }
       // Carry every non-common field over, minus the raw frames the user

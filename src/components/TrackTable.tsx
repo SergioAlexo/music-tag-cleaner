@@ -26,7 +26,10 @@ import {
   X,
   ZoomIn,
 } from "lucide-react";
-import type { AudioFile, CueData, PendingChange, PreviewMode, RowHeight, TagData } from "../types";
+import type { AudioFile, CueData, KeyNotation, PendingChange, PreviewMode, RowHeight, TagData } from "../types";
+import { withRekordbox, type RekordboxInfo } from "../hooks/useRekordbox";
+import { formatKey } from "../lib/keys";
+import { bpmCell, keyCell, ratingCell } from "../lib/rekordboxSync";
 import { basename, FIELD_LABELS, formatBytes, KEPT_FIELD_KEYS } from "../types";
 import type { ImageInfo as ImgInfo } from "../hooks/useImageInfo";
 import type { Notify } from "../hooks/useFiles";
@@ -110,18 +113,28 @@ export const ALL_COLUMNS: ColumnDef[] = [
     value: (_f, t) => t?.originalArtist ?? "",
   },
   { id: "comment", label: "Comment", width: 200, field: "comment", value: (_f, t) => t?.comment ?? "" },
+  // BPM / Key: the file's own tag first, Rekordbox's analysis when the tag is
+  // empty (marked "RB" in the cell). Editable like any other curated field.
   {
     id: "bpm",
     label: "BPM",
-    width: 70,
-    value: (f) => (f.bpm != null ? String(Math.round(f.bpm)) : ""),
+    width: 78,
+    field: "bpm",
+    value: (f, t) => bpmCell(f, t).text,
     align: "right",
   },
-  { id: "key", label: "Key", width: 60, value: (f) => f.key ?? "" },
+  { id: "key", label: "Key", width: 70, field: "key", value: (f, t) => keyCell(f, t).text },
   { id: "format", label: "Format", width: 72, value: (f) => f.format.toUpperCase() },
   { id: "size", label: "Size", width: 84, value: (f) => formatBytes(f.size), align: "right" },
   { id: "imageInfo", label: "Artwork", width: 150, value: () => "", custom: "imageInfo" },
 ];
+
+/** Small marker for a value that comes from (or disagrees with) Rekordbox. */
+function RekordboxMark() {
+  return (
+    <span className="shrink-0 rounded bg-primary/15 px-1 text-[9px] font-semibold leading-4 text-primary">RB</span>
+  );
+}
 
 export function formatImageInfo(info: { mime: string; sizeBytes: number; width: number; height: number } | null | undefined): string {
   if (info === null) return "no art";
@@ -192,6 +205,10 @@ const ROW_HEIGHTS: RowHeight[] = ["compact", "normal", "tall"];
 
 interface Props {
   files: AudioFile[];
+  /** Rekordbox BPM/key/rating by path, merged onto `files` for the BPM, Key and Rating columns. */
+  rekordbox?: Record<string, RekordboxInfo>;
+  /** How the Key column is displayed. */
+  keyNotation?: KeyNotation;
   tags: Record<string, TagData>;
   covers: Record<string, string | null>;
   imageInfo: Record<string, ImgInfo | null>;
@@ -383,7 +400,9 @@ function ArtworkLightbox({
 }
 
 export function TrackTable({
-  files,
+  files: filesProp,
+  rekordbox,
+  keyNotation = "stored",
   tags,
   covers,
   imageInfo,
@@ -424,6 +443,8 @@ export function TrackTable({
   notify,
   logWheelEvents,
 }: Props) {
+  // Rekordbox's BPM / key / rating layered onto the loaded files.
+  const files = useMemo(() => withRekordbox(filesProp, rekordbox ?? {}), [filesProp, rekordbox]);
   // Local mirror of the persisted widths so a drag can update at pointer speed
   // without a settings write per frame; re-synced when the prop changes from
   // the outside (settings import/restore, defaults reset).
@@ -825,7 +846,7 @@ export function TrackTable({
         filteredRows.some((f) => {
           const t = tags[f.path];
           if (!t) return false;
-          return c.custom === "rating" ? (t.rating ?? 0) > 0 : !!c.value(f, t);
+          return c.custom === "rating" ? ratingCell(f, t).stars > 0 : !!c.value(f, t);
         }),
       )
       .map((c) => ({ ...c, dynamic: true }));
@@ -919,7 +940,11 @@ export function TrackTable({
     /** Comparable primitive for a cell — numeric where that makes sense, else lowercased text. */
     const sortValue = (f: AudioFile): string | number => {
       const t = tags[f.path];
-      if (col.id === "rating") return t?.rating ?? 0;
+      if (col.id === "rating") return ratingCell(f, t).stars;
+      if (col.id === "bpm") {
+        const n = parseFloat(col.value(f, t));
+        return Number.isNaN(n) ? -Infinity : n;
+      }
       if (col.id === "size") return f.size;
       if (col.id === "preview") return f.durationSecs ?? -1;
       if (col.id === "imageInfo") return imageInfo[f.path]?.sizeBytes ?? 0;
@@ -1997,11 +2022,22 @@ export function TrackTable({
                             className={cn("px-3", rh.py)}
                             onClick={(e) => e.stopPropagation()}
                           >
-                            <Stars
-                              value={t?.rating ?? 0}
-                              readOnly={!t}
-                              onChange={(n) => onEditRating(targetPaths(f.path), n)}
-                            />
+                            {(() => {
+                              const r = ratingCell(f, t);
+                              return (
+                                <span
+                                  className="flex items-center gap-1"
+                                  title={r.fromRekordbox ? "Rating from Rekordbox; click a star to write it into the file" : undefined}
+                                >
+                                  <Stars
+                                    value={r.stars}
+                                    readOnly={!t}
+                                    onChange={(n) => onEditRating(targetPaths(f.path), n)}
+                                  />
+                                  {r.fromRekordbox && <RekordboxMark />}
+                                </span>
+                              );
+                            })()}
                           </td>
                         );
                       }
@@ -2010,6 +2046,8 @@ export function TrackTable({
                         editing.field === c.id &&
                         (c.field || c.id === "filename" || c.dynamic);
                       const value = c.value(f, t);
+                      const rbCell = c.id === "bpm" ? bpmCell(f, t) : c.id === "key" ? keyCell(f, t) : null;
+                      const shown = c.id === "key" ? formatKey(value, keyNotation) : value;
                       const pendField = c.field ?? c.rawKey;
                       const pend = pendField
                         ? pendingByKey.get(`${f.path}::${pendField}`)
@@ -2033,7 +2071,9 @@ export function TrackTable({
                                 ? `${value} — double-click to edit, clear it to delete this field entirely`
                                 : c.id === "filename"
                                   ? `${f.path} — double-click to rename`
-                                  : value
+                                  : rbCell?.fromRekordbox
+                                    ? `${shown} — ${rbCell.note}`
+                                    : shown
                           }
                           onClick={(e) => {
                             if (isEditing) e.stopPropagation();
@@ -2140,8 +2180,13 @@ export function TrackTable({
                                   <span className="truncate">{renderCellValue(c, value)}</span>
                                   <Link2 className="h-3 w-3 shrink-0 text-primary" />
                                 </span>
+                              ) : rbCell?.fromRekordbox ? (
+                                <span className="inline-flex items-center gap-1">
+                                  {renderCellValue(c, shown)}
+                                  <RekordboxMark />
+                                </span>
                               ) : (
-                                renderCellValue(c, value)
+                                renderCellValue(c, shown)
                               );
                             })()
                           ) : (
