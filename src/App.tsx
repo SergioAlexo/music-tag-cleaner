@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { requestFocusPath } from "./lib/focusPath";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { audioDir, join as joinPath } from "@tauri-apps/api/path";
 import { listen } from "@tauri-apps/api/event";
@@ -22,6 +23,8 @@ import { useFiles, type NotifyOpts } from "./hooks/useFiles";
 import { useHistory, type HistoryChange } from "./hooks/useHistory";
 import { useSettings } from "./hooks/useSettings";
 import { useLibraryIndex, mergeWithSession } from "./hooks/useLibraryIndex";
+import { useRekordboxLookup, withRekordbox } from "./hooks/useRekordbox";
+import { buildRekordboxSyncPreview } from "./lib/rekordboxSync";
 import { useTags } from "./hooks/useTags";
 import { LibraryPage } from "./pages/LibraryPage";
 import { useGenreLoad } from "./hooks/useGenreLoad";
@@ -298,6 +301,14 @@ export default function App() {
     [libraryIndex.files, libraryIndex.tags, filesApi.files, libraryTags],
   );
   const [pending, setPending] = useState<PendingChange[] | null>(null);
+  // Rekordbox BPM/key/rating for whatever is loaded, from the last imported
+  // rekordbox.xml. Re-asked after a re-import (mtime change).
+  const loadedPaths = useMemo(() => filesApi.files.map((f) => f.path), [filesApi.files]);
+  const rekordboxInfo = useRekordboxLookup(
+    loadedPaths,
+    settings.rekordboxXmlPath,
+    settings.rekordboxXmlMtime,
+  );
   const [previewMode, setPreviewMode] = useState<PreviewMode>("clear");
   const [tagsMap, setTagsMap] = useState<Record<string, TagData>>({});
   const [busy, setBusy] = useState(false);
@@ -910,7 +921,10 @@ export default function App() {
           before: r.before,
           after: r.after,
         }));
-      pushHistory({ label: `Apply ${previewMode}`, changes });
+      pushHistory({
+        label: previewMode === "rekordboxSync" ? "Rekordbox BPM/Key/Rating into tags" : `Apply ${previewMode}`,
+        changes,
+      });
       await afterWrite(affected);
       if (previewMode === "standardize" && settings.standardizeFilename && lastStandardizeTransformRef.current) {
         await renameFilenamesInPlace(affected, lastStandardizeTransformRef.current);
@@ -955,6 +969,43 @@ export default function App() {
     filesApi.remap(mapping);
     void reindexLibraryPaths(renamed.flat());
     notify(`Renamed ${renamed.length} file${renamed.length === 1 ? "" : "s"}`, "success");
+  };
+
+  /**
+   * "Rekordbox → tags": previews writing Rekordbox's BPM, key and rating into
+   * the selected files' own tags, through the same preview/apply/undo flow as
+   * Standardize. Only fields that are missing or different produce a row.
+   */
+  const runRekordboxToTags = async () => {
+    const paths = filesApi.selectedPaths;
+    if (!paths.length) return notify("No files selected", "info");
+    if (!settings.rekordboxXmlPath) return notify("Choose a rekordbox.xml in Settings first", "info");
+    setBusy(true);
+    try {
+      const { map, errors } = await tagsApi.read(paths);
+      errors.forEach((e) => notify(e, "error"));
+      const selected = new Set(paths);
+      const files = withRekordbox(
+        filesApi.files.filter((f) => selected.has(f.path)),
+        rekordboxInfo,
+      );
+      const rows = buildRekordboxSyncPreview(files, map);
+      setTagsMap(map);
+      setPreviewMode("rekordboxSync");
+      setPending(rows);
+      if (!rows.length) {
+        notify(
+          files.some((f) => rekordboxInfo[f.path])
+            ? "The selected files already match Rekordbox"
+            : "Rekordbox has no BPM, key or rating for the selected files (re-export the collection?)",
+          "info",
+        );
+      }
+    } catch (e) {
+      notify(String(e), "error");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const generateIds = async () => {
@@ -2057,6 +2108,8 @@ This rewrites the genre tag on ${
               onCharacterRules={withTrack("characterRules", runCharacterRules)}
               onRemoveChars={withTrack("removeChars", runRemoveChars)}
               onGenerateIds={withTrack("generateIds", generateIds)}
+              onRekordboxToTags={withTrack("rekordboxToTags", runRekordboxToTags)}
+              rekordbox={rekordboxInfo}
               onUnifyIds={withTrack("unifyIds", () => void startUnify())}
               onConvert={withTrack("convert", () => openConvert())}
               onSeparateStems={withTrack("stems", () => void openStems())}
@@ -2101,6 +2154,10 @@ This rewrites the genre tag on ${
               tags={libraryTags}
               notify={notify}
               onDelete={deleteDuplicateFiles}
+              onShowInLibrary={(path) => {
+                setPage("library");
+                requestFocusPath(path);
+              }}
               onInspect={(path) => {
                 const file = filesApi.files.find((f) => f.path === path);
                 if (file) inspect(file);

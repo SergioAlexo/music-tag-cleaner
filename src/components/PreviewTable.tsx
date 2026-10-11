@@ -55,7 +55,9 @@ export default function PreviewTable({ rows, mode, busy, onRowsChange, onApply, 
                     ? "Session Changes"
                     : mode === "trackIdMigration"
                       ? "Preview — Move Track Number IDs to Track ID"
-                      : "Preview — Standardize"}
+                      : mode === "rekordboxSync"
+                        ? "Preview — Rekordbox BPM / Key / Rating into tags"
+                        : "Preview — Standardize"}
           </h2>
           <p className="text-xs text-muted-foreground">
             {readOnly

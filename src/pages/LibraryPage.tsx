@@ -9,6 +9,7 @@ import {
   GitCompare,
   Hash,
   History,
+  Import,
   ImageDown,
   RotateCcw,
   RotateCw,
@@ -34,6 +35,7 @@ import type {
 import type { Notify } from "../hooks/useFiles";
 import { KEPT_FIELD_KEYS } from "../types";
 import type { ImageInfo as ImgInfo } from "../hooks/useImageInfo";
+import type { RekordboxInfo } from "../hooks/useRekordbox";
 import { buildTrackGroups, trackIdFormats } from "../lib/trackGroups";
 import { shortcutFor } from "../lib/shortcuts";
 import { TrackTable } from "../components/TrackTable";
@@ -120,6 +122,10 @@ interface Props {
   onCharacterRules: () => void;
   onRemoveChars: () => void;
   onGenerateIds: () => void;
+  /** Previews writing Rekordbox BPM / key / rating into the selected files' tags. */
+  onRekordboxToTags: () => void;
+  /** Rekordbox BPM/key/rating by path, for the table's BPM, Key and Rating columns. */
+  rekordbox: Record<string, RekordboxInfo>;
   onUnifyIds: () => void;
   onConvert: () => void;
   /** Opens the Demucs stem-separation dialog for the selection. */
@@ -203,6 +209,8 @@ export function LibraryPage({
   onCharacterRules,
   onRemoveChars,
   onGenerateIds,
+  onRekordboxToTags,
+  rekordbox,
   onUnifyIds,
   onConvert,
   onSeparateStems,
@@ -608,6 +616,20 @@ export function LibraryPage({
           <Button
             variant="secondary"
             size="sm"
+            onClick={onRekordboxToTags}
+            disabled={noSel || !settings.rekordboxXmlPath}
+            title={
+              settings.rekordboxXmlPath
+                ? "Preview writing Rekordbox's BPM, key and rating into the selected files' tags (undoable)"
+                : "Choose a rekordbox.xml in Settings first"
+            }
+          >
+            <Import />
+            Rekordbox → tags
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={onConvert}
             disabled={noSel}
             title="Convert the selected tracks to another format (MP3, FLAC, ALAC, AAC…) — tags and Track ID are carried over"
@@ -695,6 +717,8 @@ export function LibraryPage({
           ) : (
             <TrackTable
               files={sidebarFilteredFiles}
+              rekordbox={rekordbox}
+              keyNotation={settings.keyNotation}
               tags={libraryTags}
               covers={covers}
               imageInfo={imageInfo}

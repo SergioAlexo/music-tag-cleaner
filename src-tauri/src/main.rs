@@ -200,6 +200,7 @@ fn main() {
             commands::rekordbox_import::read_rekordbox_playlists,
             commands::rekordbox_import::export_rekordbox_playlists_for_mixxx,
             commands::rekordbox_import::import_rekordbox_library_tags,
+            commands::rekordbox_import::rekordbox_lookup,
             commands::ytmusic::ytdlp_info,
             commands::ytmusic::install_ytdlp,
             commands::ytmusic::fetch_ytmusic_playlist,

@@ -26,8 +26,38 @@ const FILE_OP_TIMEOUT: Duration = Duration::from_secs(20);
 /// `key_name()` of the private frame that holds the app-assigned track id.
 const TRACK_ID_FIELD: &str = "Unknown(TRACKID)";
 
-fn track_id_key() -> ItemKey {
-    ItemKey::Unknown("TRACKID".to_string())
+
+/// MP4 only stores a custom field as an iTunes freeform atom
+/// (`----:com.apple.iTunes:NAME`); a bare `Unknown("NAME")` is dropped at save.
+const MP4_FREEFORM_PREFIX: &str = "----:com.apple.iTunes:";
+
+/// Keys a private text field (`TRACKID`, `ORIGINALARTIST`) may be stored
+/// under, the one to write first. ID3v2 and Vorbis keep the bare name (TXXX
+/// frame / comment field); MP4 needs the freeform atom form.
+fn private_keys(tag_type: TagType, name: &str) -> Vec<ItemKey> {
+    let freeform = ItemKey::Unknown(format!("{MP4_FREEFORM_PREFIX}{name}"));
+    let bare = ItemKey::Unknown(name.to_string());
+    if tag_type == TagType::Mp4Ilst {
+        vec![freeform, bare]
+    } else {
+        vec![bare, freeform]
+    }
+}
+
+/// Original Artist: the real frame where the format has one (TOPE), else a
+/// private field — Vorbis comments and MP4 have no mapped key for it, which
+/// silently dropped the value on FLAC/OGG/M4A.
+fn original_artist_keys(tag_type: TagType) -> Vec<ItemKey> {
+    let mut keys = vec![ItemKey::OriginalArtist];
+    if ItemKey::OriginalArtist.map_key(tag_type, false).is_none() {
+        keys = private_keys(tag_type, "ORIGINALARTIST");
+        keys.push(ItemKey::OriginalArtist);
+    }
+    keys
+}
+
+fn first_text(tag: &Tag, keys: &[ItemKey]) -> Option<String> {
+    keys.iter().find_map(|k| get_text(tag, k))
 }
 
 /// Runs blocking file I/O off the async runtime with a timeout, so a single
@@ -374,6 +404,40 @@ fn displayed_comment(tag: &Tag) -> Option<&TagItem> {
         .filter(|i| text_of(i.value()).is_some_and(|t| !t.is_empty()))
 }
 
+/// The tempo as stored: `Bpm` (TBPM, Vorbis `BPM`) first, else `IntegerBpm`
+/// (MP4 `tmpo`). Both are curated, so neither also shows as a raw column.
+fn bpm_of(tag: &Tag) -> Option<String> {
+    get_text(tag, &ItemKey::Bpm)
+        .or_else(|| get_text(tag, &ItemKey::IntegerBpm))
+        .filter(|s| !s.trim().is_empty())
+}
+
+/// The BPM text to store for `tag_type`. ID3v2 TBPM is defined as an integer
+/// ("beats per minute... as an integer") and MP4 `tmpo` is a 16-bit integer,
+/// so a decimal such as Rekordbox's 127.99 is rounded there; Vorbis comments
+/// and APE take free text, so the decimal is kept.
+fn bpm_for_format(tag_type: TagType, value: &str) -> String {
+    let v = value.trim();
+    match (tag_type, v.parse::<f64>()) {
+        (TagType::Id3v2 | TagType::Mp4Ilst, Ok(n)) if n.is_finite() && n > 0.0 => {
+            format!("{}", n.round() as i64)
+        }
+        _ => v.to_string(),
+    }
+}
+
+/// Keys a BPM may live under, the one to write first: the first of
+/// `IntegerBpm` (ID3v2 TBPM, MP4 `tmpo`) and `Bpm` (Vorbis/APE `BPM`) the
+/// format maps. Writing a key the format doesn't map is dropped silently at
+/// save, which is how ID3v2 BPM used to vanish when `Bpm` was tried first.
+fn bpm_keys(tag_type: TagType) -> Vec<ItemKey> {
+    let mut keys = vec![ItemKey::IntegerBpm, ItemKey::Bpm];
+    if ItemKey::IntegerBpm.map_key(tag_type, false).is_none() {
+        keys.reverse();
+    }
+    keys
+}
+
 fn tag_data_of_tag(tag: &Tag) -> TagData {
     let mut data = TagData {
         title: tag.title().map(|c| c.to_string()),
@@ -392,9 +456,11 @@ fn tag_data_of_tag(tag: &Tag) -> TagData {
         genre: tag.genre().map(|c| c.to_string()),
         comment: displayed_comment(tag).and_then(|i| text_of(i.value())),
         composer: get_text(tag, &ItemKey::Composer),
-        original_artist: get_text(tag, &ItemKey::OriginalArtist),
-        track_id: get_text(tag, &track_id_key()),
+        original_artist: first_text(tag, &original_artist_keys(tag.tag_type())),
+        track_id: first_text(tag, &private_keys(tag.tag_type(), "TRACKID")),
         rating: read_rating(tag),
+        bpm: bpm_of(tag),
+        key: get_text(tag, &ItemKey::InitialKey),
         has_cover_art: !tag.pictures().is_empty(),
         all_fields: Default::default(),
     };
@@ -695,7 +761,14 @@ fn is_curated_key(key: &ItemKey) -> bool {
             | ItemKey::Composer
             | ItemKey::OriginalArtist
             | ItemKey::Popularimeter
-    ) || matches!(key, ItemKey::Unknown(k) if k == "TRACKID" || k == "RATING")
+            | ItemKey::Bpm
+            | ItemKey::IntegerBpm
+            | ItemKey::InitialKey
+    ) || matches!(key, ItemKey::Unknown(k)
+        if matches!(
+            k.strip_prefix(MP4_FREEFORM_PREFIX).unwrap_or(k.as_str()),
+            "TRACKID" | "RATING" | "ORIGINALARTIST"
+        ))
 }
 
 /// `Some(trimmed)` for a value worth writing, `None` for absent/blank.
@@ -936,11 +1009,14 @@ pub(crate) fn write_tags_blocking(
     write_field(&mut tag, &[ItemKey::Composer], &old.composer, &tags.composer);
     write_field(
         &mut tag,
-        &[ItemKey::OriginalArtist],
+        &original_artist_keys(tag_type),
         &old.original_artist,
         &tags.original_artist,
     );
-    write_field(&mut tag, &[track_id_key()], &old.track_id, &tags.track_id);
+    write_field(&mut tag, &private_keys(tag_type, "TRACKID"), &old.track_id, &tags.track_id);
+    let new_bpm = tags.bpm.as_deref().map(|v| bpm_for_format(tag_type, v));
+    write_field(&mut tag, &bpm_keys(tag_type), &old.bpm, &new_bpm);
+    write_field(&mut tag, &[ItemKey::InitialKey], &old.key, &tags.key);
 
     // 4. Searchable backup — only into a field that is empty before and after.
     if let Some(key) = backup_key {
@@ -2378,6 +2454,8 @@ mod tests {
             "TrackTitle", "TrackArtist", "AlbumTitle", "AlbumArtist", "TrackNumber",
             "TrackTotal", "DiscNumber", "DiscTotal", "Year", "RecordingDate", "Genre",
             "Comment", "OriginalArtist", "Composer", "Popularimeter", "Unknown(TRACKID)",
+            "Bpm", "IntegerBpm", "InitialKey", "Unknown(ORIGINALARTIST)",
+            "Unknown(----:com.apple.iTunes:TRACKID)", "Unknown(----:com.apple.iTunes:ORIGINALARTIST)",
         ];
         tags.all_fields
             .keys()
@@ -2723,6 +2801,196 @@ mod tests {
         let id3 = id3_of(&p);
         assert_eq!(frames_with_id(&id3, "GEOB").len(), 1, "restore took the Serato data");
         assert_eq!(back.rating, Some(4), "restore took the rating");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- Tag audit matrix (v0.19 A3) ------------------------------------------
+    //
+    // Every curated field x every container: write it through the real write
+    // path, re-read it, and require it to come back equal. Fixtures are 0.2 s
+    // silent files (ffmpeg, no metadata) kept in `testdata/`, plus the
+    // synthetic mp3/flac above.
+
+    const SAMPLE_M4A: &[u8] = include_bytes!("testdata/s.m4a");
+    const SAMPLE_OGG: &[u8] = include_bytes!("testdata/s.ogg");
+    const SAMPLE_AIFF: &[u8] = include_bytes!("testdata/s.aiff");
+    const SAMPLE_WAV: &[u8] = include_bytes!("testdata/s.wav");
+
+    /// An MP3 whose ID3v2 tag is written as v2.3 (what older Traktor/iTunes
+    /// libraries use) or v2.4, with the DJ companion frames already on it.
+    fn mp3_with_version(dir: &Path, v23: bool) -> String {
+        let path = dir.join(if v23 { "v23.mp3" } else { "v24.mp3" });
+        std::fs::write(&path, minimal_mp3_bytes()).unwrap();
+        let p = path.to_str().unwrap().to_string();
+        let mut t = Id3v2Tag::new();
+        t.set_title("Seed".into());
+        t.insert(Frame::Binary(BinaryFrame::new(
+            FrameId::Valid(Cow::Borrowed("GEOB")),
+            b"\0application/octet-stream\0\0Serato Markers2\0cue-data".to_vec(),
+        )));
+        t.insert(Frame::Private(PrivateFrame::new("TRAKTOR4".into(), vec![1, 2, 3])));
+        t.insert(Frame::Popularimeter(PopularimeterFrame::new(
+            "Windows Media Player 9 Series".into(),
+            128,
+            3,
+        )));
+        t.save_to_path(&p, WriteOptions::default().use_id3v23(v23)).unwrap();
+        p
+    }
+
+    fn full_tags() -> TagData {
+        TagData {
+            title: Some("Audit Title".into()),
+            artist: Some("Audit Artist".into()),
+            album: Some("Audit Album".into()),
+            album_artist: Some("Audit AlbumArtist".into()),
+            track_number: Some("3/12".into()),
+            disc_number: Some("1/2".into()),
+            year: Some("2019".into()),
+            genre: Some("House".into()),
+            comment: Some("Audit comment".into()),
+            composer: Some("Audit Composer".into()),
+            original_artist: Some("Audit Original".into()),
+            track_id: Some("000777".into()),
+            rating: Some(4),
+            bpm: Some("128".into()),
+            key: Some("8A".into()),
+            ..TagData::default()
+        }
+    }
+
+    /// (field name, read-back value as a string) for every curated field.
+    fn curated_view(t: &TagData) -> Vec<(&'static str, Option<String>)> {
+        vec![
+            ("title", t.title.clone()),
+            ("artist", t.artist.clone()),
+            ("album", t.album.clone()),
+            ("albumArtist", t.album_artist.clone()),
+            ("trackNumber", t.track_number.clone()),
+            ("discNumber", t.disc_number.clone()),
+            ("year", t.year.clone()),
+            ("genre", t.genre.clone()),
+            ("comment", t.comment.clone()),
+            ("composer", t.composer.clone()),
+            ("originalArtist", t.original_artist.clone()),
+            ("trackId", t.track_id.clone()),
+            ("rating", t.rating.map(|r| r.to_string())),
+            ("bpm", t.bpm.clone()),
+            ("key", t.key.clone()),
+        ]
+    }
+
+    fn matrix_files(dir: &Path) -> Vec<(&'static str, String)> {
+        let mut out = vec![
+            ("mp3 id3v2.3", mp3_with_version(dir, true)),
+            ("mp3 id3v2.4", mp3_with_version(dir, false)),
+        ];
+        let flac = dir.join("m.flac");
+        std::fs::write(&flac, minimal_flac_bytes()).unwrap();
+        out.push(("flac", flac.to_str().unwrap().to_string()));
+        for (label, name, bytes) in [
+            ("m4a", "m.m4a", SAMPLE_M4A),
+            ("ogg vorbis", "m.ogg", SAMPLE_OGG),
+            ("aiff", "m.aiff", SAMPLE_AIFF),
+            ("wav", "m.wav", SAMPLE_WAV),
+        ] {
+            let p = dir.join(name);
+            std::fs::write(&p, bytes).unwrap();
+            out.push((label, p.to_str().unwrap().to_string()));
+        }
+        out
+    }
+
+    #[test]
+    fn every_curated_field_round_trips_in_every_container() {
+        let dir = scratch("matrix");
+        let mut failures = Vec::new();
+        for (label, p) in matrix_files(&dir) {
+            let seed = read_tags_impl(&p).unwrap_or_else(|e| panic!("{label}: unreadable fixture: {e}"));
+            write_tags_blocking(&p, full_tags(), false, ui_keep_extra(&seed), true, None)
+                .unwrap_or_else(|e| panic!("{label}: write failed: {e}"));
+            let back = read_tags_impl(&p).unwrap();
+            for ((name, want), (_, got)) in curated_view(&full_tags()).into_iter().zip(curated_view(&back)) {
+                if want != got {
+                    failures.push(format!("{label}: {name} wrote {want:?} read {got:?}"));
+                }
+            }
+            // No curated value may also surface under a raw key the UI would
+            // show as a second column: every key outside the curated list
+            // must be one the file carried before we wrote.
+            for k in back.all_fields.keys() {
+                let curated = crate::commands::library_index::KEPT_FIELD_KEYS.contains(&k.as_str());
+                if !curated && !seed.all_fields.contains_key(k) && !back.all_fields[k].is_empty() {
+                    failures.push(format!("{label}: stray raw key {k} = {:?}", back.all_fields[k]));
+                }
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(failures.is_empty(), "audit failures:\n{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn a_second_identical_write_changes_nothing() {
+        // Writing what is already there must be a no-op for every field
+        // (this is what keeps a "no changes" save from touching the file).
+        let dir = scratch("matrix-idem");
+        for (label, p) in matrix_files(&dir) {
+            write_tags_blocking(&p, full_tags(), false, vec![], true, None).unwrap();
+            let once = read_tags_impl(&p).unwrap();
+            write_tags_blocking(&p, once.clone(), false, ui_keep_extra(&once), true, None).unwrap();
+            let twice = read_tags_impl(&p).unwrap();
+            assert_eq!(curated_view(&once), curated_view(&twice), "{label}");
+            assert_eq!(once.all_fields, twice.all_fields, "{label}: raw fields drifted");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn id3_companion_frames_survive_a_full_edit_in_v23_and_v24() {
+        let dir = scratch("matrix-companions");
+        for v23 in [true, false] {
+            let p = mp3_with_version(&dir, v23);
+            let seed = read_tags_impl(&p).unwrap();
+            let mut edit = full_tags();
+            edit.rating = None; // leave the foreign POPM alone
+            write_tags_blocking(&p, edit, false, ui_keep_extra(&seed), true, None).unwrap();
+            let id3 = id3_of(&p);
+            assert_eq!(frames_with_id(&id3, "GEOB").len(), 1, "v23={v23}: GEOB lost");
+            assert_eq!(frames_with_id(&id3, "PRIV").len(), 1, "v23={v23}: PRIV lost");
+            assert_eq!(frames_with_id(&id3, "POPM").len(), 1, "v23={v23}: POPM lost");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bpm_is_rounded_only_where_the_format_stores_an_integer() {
+        assert_eq!(bpm_for_format(TagType::Id3v2, "127.99"), "128");
+        assert_eq!(bpm_for_format(TagType::Mp4Ilst, " 90.4 "), "90");
+        assert_eq!(bpm_for_format(TagType::VorbisComments, "127.99"), "127.99");
+        assert_eq!(bpm_for_format(TagType::Id3v2, "fast"), "fast");
+    }
+
+    #[test]
+    fn bpm_and_key_edits_leave_other_fields_alone_and_can_be_cleared() {
+        let dir = scratch("bpmkey");
+        let p = dj_library_mp3(&dir);
+        let seed = read_tags_impl(&p).unwrap();
+        let mut e = seed.clone();
+        e.bpm = Some("127.6".into());
+        e.key = Some("Am".into());
+        write_tags_blocking(&p, e, false, ui_keep_extra(&seed), true, None).unwrap();
+        let back = read_tags_impl(&p).unwrap();
+        assert_eq!(back.bpm.as_deref(), Some("128"));
+        assert_eq!(back.key.as_deref(), Some("Am"));
+        assert_eq!(back.title, seed.title);
+        assert_eq!(back.rating, seed.rating);
+        assert_eq!(back.all_fields.get("Unknown(CUSTOMFIELD)").map(String::as_str), Some("keep me"));
+        let mut c = back.clone();
+        c.bpm = None;
+        c.key = None;
+        write_tags_blocking(&p, c, false, ui_keep_extra(&back), true, None).unwrap();
+        let cleared = read_tags_impl(&p).unwrap();
+        assert_eq!((cleared.bpm, cleared.key), (None, None));
         std::fs::remove_dir_all(&dir).ok();
     }
 
