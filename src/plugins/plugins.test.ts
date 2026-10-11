@@ -1,5 +1,3 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseManifest, validateManifest, sha256Hex, contentHash, actionSegment, pluginActionId } from "./manifest";
 import { checkActionPermission, networkAllowed } from "./permissions";
@@ -319,12 +317,20 @@ describe("manager: approval gate", () => {
 });
 
 describe("bundled example plugins (plugins-examples/)", () => {
-  const root = resolve(__dirname, "../../plugins-examples");
-  const dirs = readdirSync(root).filter((d) => statSync(join(root, d)).isDirectory());
+  // Vite inlines the example files as raw text, so no Node typings are needed.
+  const raw = import.meta.glob("../../plugins-examples/*/*", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+  const files = new Map<string, Map<string, string>>();
+  for (const [path, text] of Object.entries(raw)) {
+    const m = /plugins-examples\/([^/]+)\/([^/]+)$/.exec(path);
+    if (!m) continue;
+    if (!files.has(m[1])) files.set(m[1], new Map());
+    files.get(m[1])!.set(m[2], text);
+  }
+  const dirs = [...files.keys()];
   const load = (d: string) => {
-    const manifest = readFileSync(join(root, d, "manifest.json"), "utf8");
+    const manifest = files.get(d)!.get("manifest.json")!;
     const entry = JSON.parse(manifest).entry as string | undefined;
-    return { manifest, code: entry ? readFileSync(join(root, d, entry), "utf8") : null };
+    return { manifest, code: entry ? files.get(d)!.get(entry)! : null };
   };
 
   it("every example has a valid manifest whose id matches its folder", () => {
