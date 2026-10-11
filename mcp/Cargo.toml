@@ -1,0 +1,21 @@
+[package]
+name = "mtc-mcp"
+version = "0.18.0"
+description = "MCP server (stdio) that lets an AI assistant drive Music Tag Cleaner through its local AI-control bridge"
+license = "GPL-3.0-or-later"
+edition = "2021"
+
+# Not part of src-tauri's build: a small standalone binary, so `cargo test` in
+# src-tauri never compiles an MCP stack and the helper ships on its own.
+[workspace]
+
+[[bin]]
+name = "mtc-mcp"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "3.5", features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "3", default-features = false, features = ["json"] }

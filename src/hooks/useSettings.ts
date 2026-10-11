@@ -5,7 +5,7 @@ import type { Settings } from "../types";
 import { DEFAULT_STEM_OPTIONS } from "../types";
 import { DEFAULT_FLAG_EXTRA_CHARS, DEFAULT_REPLACEMENTS } from "../lib/standardize";
 
-export const CURRENT_SETTINGS_VERSION = 20;
+export const CURRENT_SETTINGS_VERSION = 21;
 
 export const DEFAULT_SETTINGS: Settings = {
   aiBackend: "ollama",
@@ -37,6 +37,7 @@ export const DEFAULT_SETTINGS: Settings = {
   rekordboxXmlMtime: 0,
   keyNotation: "stored",
   libraryAutoRefresh: false,
+  aiControl: false,
   lyricsStorage: "sidecar",
   languageAppendComment: false,
   theme: "system",
@@ -236,6 +237,10 @@ export function migrate(s: Settings, savedVersion: number): Settings {
   // visibleColumns: it is opt-in from the column picker.
   if (savedVersion < 20) {
     // (no data change)
+  }
+  if (savedVersion < 21) {
+    // D1: aiControl (default off, filled in by the merge).
+    next.aiControl = false;
   }
   next.settingsVersion = CURRENT_SETTINGS_VERSION;
   return next;
