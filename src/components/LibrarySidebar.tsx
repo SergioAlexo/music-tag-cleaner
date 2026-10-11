@@ -5,22 +5,39 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Disc3,
   Folder,
   Link2,
   Music2,
+  RefreshCw,
   Search,
   User,
   X,
 } from "lucide-react";
-import type { AudioFile, GenreCount, TagData, TrackGroup } from "../types";
+import type { AudioFile, IndexProgress, TagData, TrackGroup } from "../types";
+import {
+  arrangeFacet,
+  FACETS,
+  facetLabel,
+  matchesFacet,
+  tallyFacet,
+  type Facet,
+  type FacetCount,
+  type FacetPick,
+  type FacetSort,
+} from "../lib/facets";
+import { describeProgress } from "../lib/libraryRefresh";
 import { cn } from "./ui";
+import { SidebarFacetList } from "./SidebarFacetList";
+import { SidebarTrackSearch } from "./SidebarTrackSearch";
 
-export type SidebarMode = "folders" | "genres" | "artists" | "tracks";
+export type SidebarMode = "folders" | "genres" | "albums" | "artists" | "tracks" | "search";
 
 /** What the sidebar currently narrows the track table down to, if anything. */
 export type SidebarFilter =
   | { mode: "folder"; value: string }
-  | { mode: "genre" | "artist"; value: string }
+  | { mode: "artist"; value: string }
+  | { mode: "facet"; pick: FacetPick }
   | { mode: "group"; value: string };
 
 interface FolderNode {
@@ -31,7 +48,8 @@ interface FolderNode {
 }
 
 const SEP = /[/\\]/;
-const GENRE_SORT_KEY = "librarySidebar.genreSort";
+/** Per-facet A-Z / count preference. "genre" keeps the key the genre-only sidebar used. */
+const sortKey = (facet: Facet) => `librarySidebar.${facet}Sort`;
 
 function buildFolderTree(files: AudioFile[]): FolderNode {
   const root: FolderNode = { name: "", fullPath: "", count: 0, children: new Map() };
@@ -138,9 +156,11 @@ function subtreeMatches(node: FolderNode, q: string): boolean {
  * already loaded, never a disk rescan. A search box narrows the tree/list
  * itself, separate from the table's own row search.
  *
- * Genres is the exception: it lists every genre in the indexed library (not
- * just the loaded files') and a click *loads* that genre as the batch via
- * `onGenreClick`. Without an index it falls back to filtering the loaded files.
+ * Genres and Albums are the exception (both are one "facet", lib/facets.ts):
+ * they list every value in the indexed library (not just the loaded files')
+ * and a click *loads* it as the batch via `onFacetClick`. Without an index
+ * they fall back to filtering the loaded files. Search finds any indexed
+ * track and adds it to the session; Refresh re-scans the Library folder.
  */
 export function LibrarySidebar({
   files,
@@ -149,9 +169,17 @@ export function LibrarySidebar({
   width,
   collapsed,
   filter,
-  libraryGenres,
-  activeGenre,
-  onGenreClick,
+  libraryFacets,
+  activePick,
+  onFacetClick,
+  onRenameFacet,
+  searchFiles,
+  searchTags,
+  sessionPaths,
+  onAddTracks,
+  indexing,
+  progress,
+  onRefresh,
   onFilterChange,
   onWidthChange,
   onCollapsedChange,
@@ -162,11 +190,23 @@ export function LibrarySidebar({
   width: number;
   collapsed: boolean;
   filter: SidebarFilter | null;
-  /** Every genre in the library index, with counts. Empty = no index yet. */
-  libraryGenres: GenreCount[];
-  /** The genre the current batch was loaded from, if it was loaded from one. */
-  activeGenre: string | null;
-  onGenreClick: (genre: string) => void;
+  /** Every value of each facet in the library index, with counts. Empty = no index yet. */
+  libraryFacets: Record<Facet, FacetCount[]>;
+  /** The genre / album the current batch was loaded from, if it was loaded from one. */
+  activePick: FacetPick | null;
+  onFacetClick: (pick: FacetPick) => void;
+  /** Retags every track in the bucket (indexed or not). */
+  onRenameFacet: (pick: FacetPick, newName: string) => void;
+  /** The indexed collection, for the Search tab. */
+  searchFiles: AudioFile[];
+  searchTags: Record<string, TagData>;
+  /** Paths already in the current session. */
+  sessionPaths: Set<string>;
+  onAddTracks: (paths: string[]) => void;
+  indexing: boolean;
+  progress: IndexProgress | null;
+  /** Re-runs the incremental scan; resolves to the "N new, M changed, K removed" line (null = skipped). */
+  onRefresh: () => Promise<string | null>;
   onFilterChange: (filter: SidebarFilter | null) => void;
   onWidthChange: (width: number) => void;
   onCollapsedChange: (collapsed: boolean) => void;
@@ -176,43 +216,65 @@ export function LibrarySidebar({
   // A UI preference, not a setting: kept in localStorage so it survives a
   // restart without a settings-version bump. Storage can throw (or be empty)
   // in odd webview states, so every access is guarded.
-  const [genreSort, setGenreSort] = useState<"count" | "name">(() => {
-    try {
-      return localStorage.getItem(GENRE_SORT_KEY) === "name" ? "name" : "count";
-    } catch {
-      return "count";
-    }
+  const [sorts, setSorts] = useState<Record<Facet, FacetSort>>(() => {
+    const read = (facet: Facet): FacetSort => {
+      try {
+        return localStorage.getItem(sortKey(facet)) === "name" ? "name" : "count";
+      } catch {
+        return "count";
+      }
+    };
+    return { genre: read("genre"), album: read("album") };
   });
-  const toggleGenreSort = () => {
-    const next = genreSort === "count" ? "name" : "count";
-    setGenreSort(next);
+  const toggleSort = (facet: Facet) => {
+    const next: FacetSort = sorts[facet] === "count" ? "name" : "count";
+    setSorts((prev) => ({ ...prev, [facet]: next }));
     try {
-      localStorage.setItem(GENRE_SORT_KEY, next);
+      localStorage.setItem(sortKey(facet), next);
     } catch {
       /* not persisted — fine */
     }
+  };
+  const [refreshNote, setRefreshNote] = useState<string | null>(null);
+  const refresh = async () => {
+    setRefreshNote(null);
+    const note = await onRefresh().catch((e) => `Refresh failed: ${e}`);
+    if (note) setRefreshNote(note);
   };
 
   const folderTree = useMemo(() => buildFolderTree(files), [files]);
   // The index's list wins; tallying the loaded files only covers the case
   // where there is no index to ask.
-  const useLibraryGenres = libraryGenres.length > 0;
-  const genreCounts = useMemo(() => {
-    const list = useLibraryGenres ? libraryGenres : tally(files.map((f) => tags[f.path]?.genre));
-    return [...list].sort((a, b) =>
-      genreSort === "name"
-        ? a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true })
-        : b.count - a.count || a.name.localeCompare(b.name),
-    );
-  }, [useLibraryGenres, libraryGenres, files, tags, genreSort]);
+  const facetFromIndex = (facet: Facet) => libraryFacets[facet].length > 0;
+  const facetItems = (facet: Facet): FacetCount[] =>
+    facetFromIndex(facet) ? libraryFacets[facet] : tallyFacet(facet, files.map((f) => tags[f.path]));
+  const genreItems = useMemo(
+    () => facetItems("genre"),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [libraryFacets.genre, files, tags],
+  );
+  const albumItems = useMemo(
+    () => facetItems("album"),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [libraryFacets.album, files, tags],
+  );
   const artistCounts = useMemo(
     () => tally(files.map((f) => tags[f.path]?.artist)),
     [files, tags],
   );
 
-  const select = (mode: SidebarFilter["mode"], value: string) => {
+  const select = (mode: "folder" | "artist" | "group", value: string) => {
     if (filter?.mode === mode && filter.value === value) onFilterChange(null);
-    else onFilterChange({ mode, value } as SidebarFilter);
+    else onFilterChange({ mode, value });
+  };
+  // With an index a click loads the bucket; without one it narrows the loaded files.
+  const pickFacet = (pick: FacetPick) => {
+    if (facetFromIndex(pick.facet)) return onFacetClick(pick);
+    if (filter?.mode === "facet" && filter.pick.facet === pick.facet && filter.pick.name === pick.name && filter.pick.artist === pick.artist) {
+      onFilterChange(null);
+    } else {
+      onFilterChange({ mode: "facet", pick });
+    }
   };
 
   // Width while a resize drag is in progress. The drag only re-renders this
@@ -253,7 +315,12 @@ export function LibrarySidebar({
   }
 
   const q = query.trim().toLowerCase();
-  const filteredGenres = q ? genreCounts.filter((g) => g.name.toLowerCase().includes(q)) : genreCounts;
+  const arranged = (facet: Facet, items: FacetCount[]) =>
+    arrangeFacet(items, sorts[facet], query, FACETS[facet].noneLabel);
+  const arrangedGenres = mode === "genres" ? arranged("genre", genreItems) : [];
+  const arrangedAlbums = mode === "albums" ? arranged("album", albumItems) : [];
+  const activeFacetPick: FacetPick | null =
+    activePick ?? (filter?.mode === "facet" ? filter.pick : null);
   const filteredArtists = q ? artistCounts.filter((a) => a.name.toLowerCase().includes(q)) : artistCounts;
   const filteredGroups = q
     ? trackGroups.filter(
@@ -269,28 +336,32 @@ export function LibrarySidebar({
       className="relative flex shrink-0 flex-col border-r bg-card/50"
       style={{ width: shownWidth }}
     >
-      <div className="flex items-center gap-1 border-b p-2">
-        {(
-          [
-            { id: "folders", label: "Folders", icon: Folder },
-            { id: "genres", label: "Genres", icon: Music2 },
-            { id: "artists", label: "Artists", icon: User },
-            { id: "tracks", label: "Tracks", icon: Link2 },
-          ] as const
-        ).map((m) => (
-          <button
-            key={m.id}
-            onClick={() => setMode(m.id)}
-            className={cn(
-              "flex flex-1 flex-col items-center gap-0.5 rounded-md py-1.5 text-[10px] font-medium",
-              mode === m.id ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60",
-            )}
-            title={m.label}
-          >
-            <m.icon className="h-3.5 w-3.5" />
-            {m.label}
-          </button>
-        ))}
+      <div className="flex items-start gap-1 border-b p-2">
+        <div className="grid min-w-0 flex-1 grid-cols-3 gap-1">
+          {(
+            [
+              { id: "folders", label: "Folders", icon: Folder },
+              { id: "genres", label: "Genres", icon: Music2 },
+              { id: "albums", label: "Albums", icon: Disc3 },
+              { id: "artists", label: "Artists", icon: User },
+              { id: "tracks", label: "Tracks", icon: Link2 },
+              { id: "search", label: "Search", icon: Search },
+            ] as const
+          ).map((m) => (
+            <button
+              key={m.id}
+              onClick={() => setMode(m.id)}
+              className={cn(
+                "flex flex-col items-center gap-0.5 rounded-md py-1.5 text-[10px] font-medium",
+                mode === m.id ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60",
+              )}
+              title={m.label}
+            >
+              <m.icon className="h-3.5 w-3.5" />
+              {m.label}
+            </button>
+          ))}
+        </div>
         <button
           onClick={() => onCollapsedChange(true)}
           className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-accent"
@@ -305,29 +376,40 @@ export function LibrarySidebar({
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder={`Find a ${
-            mode === "folders"
-              ? "folder"
-              : mode === "genres"
-                ? "genre"
-                : mode === "artists"
-                  ? "artist"
-                  : "track"
-          }…`}
+          placeholder={
+            mode === "search"
+              ? "Search the whole library…"
+              : `Find a ${
+                  mode === "folders"
+                    ? "folder"
+                    : mode === "genres"
+                      ? "genre"
+                      : mode === "albums"
+                        ? "album"
+                        : mode === "artists"
+                          ? "artist"
+                          : "track"
+                }…`
+          }
           className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+          autoFocus={mode === "search"}
         />
         {query && (
           <button onClick={() => setQuery("")} className="shrink-0 text-muted-foreground hover:text-foreground">
             <X className="h-3 w-3" />
           </button>
         )}
-        {mode === "genres" && (
+        {(mode === "genres" || mode === "albums") && (
           <button
-            onClick={toggleGenreSort}
+            onClick={() => toggleSort(mode === "genres" ? "genre" : "album")}
             className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-            title={genreSort === "name" ? "Sorted A–Z (click to sort by track count)" : "Sorted by track count (click to sort A–Z)"}
+            title={
+              sorts[mode === "genres" ? "genre" : "album"] === "name"
+                ? "Sorted A–Z (click to sort by track count)"
+                : "Sorted by track count (click to sort A–Z)"
+            }
           >
-            {genreSort === "name" ? (
+            {sorts[mode === "genres" ? "genre" : "album"] === "name" ? (
               <ArrowDownAZ className="h-3.5 w-3.5" />
             ) : (
               <ArrowDownWideNarrow className="h-3.5 w-3.5" />
@@ -348,7 +430,9 @@ export function LibrarySidebar({
                 ? filter.value.split(SEP).pop()
                 : filter.mode === "group"
                   ? (trackGroups.find((g) => g.trackId === filter.value)?.name ?? filter.value)
-                  : filter.value}
+                  : filter.mode === "facet"
+                    ? facetLabel(filter.pick)
+                    : filter.value}
             </span>
           </span>
           <button onClick={() => onFilterChange(null)} className="shrink-0 text-muted-foreground hover:text-foreground">
@@ -357,7 +441,37 @@ export function LibrarySidebar({
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-1.5">
+      {(mode === "genres" || mode === "albums") && (
+        <>
+          {!facetFromIndex(mode === "genres" ? "genre" : "album") && (
+            <p className="px-3 pt-1.5 text-[11px] text-muted-foreground">
+              Add a library folder in Settings to browse every {FACETS[mode === "genres" ? "genre" : "album"].singular}.
+            </p>
+          )}
+          <SidebarFacetList
+            facet={mode === "genres" ? "genre" : "album"}
+            items={mode === "genres" ? arrangedGenres : arrangedAlbums}
+            query={query}
+            active={activeFacetPick}
+            canRename={facetFromIndex(mode === "genres" ? "genre" : "album")}
+            emptyText={`No ${mode === "genres" ? "genres" : "albums"} found.`}
+            onPick={pickFacet}
+            onRename={(pick, next) => onRenameFacet(pick, next)}
+          />
+        </>
+      )}
+      {mode === "search" && (
+        <SidebarTrackSearch
+          query={query}
+          files={searchFiles}
+          tags={searchTags}
+          sessionPaths={sessionPaths}
+          hasIndex={searchFiles.length > 0}
+          onAdd={onAddTracks}
+        />
+      )}
+
+      <div className={cn("overflow-y-auto p-1.5", mode === "genres" || mode === "albums" || mode === "search" ? "hidden" : "flex-1")}>
         {mode === "folders" &&
           (folderTree.children.size === 0 ? (
             <p className="px-1.5 py-2 text-xs text-muted-foreground">No folders loaded.</p>
@@ -374,31 +488,6 @@ export function LibrarySidebar({
                   onSelect={(p) => select("folder", p)}
                 />
               ))
-          ))}
-        {mode === "genres" && !useLibraryGenres && (
-          <p className="px-1.5 py-1 text-[11px] text-muted-foreground">
-            Add a library folder in Settings to browse every genre.
-          </p>
-        )}
-        {mode === "genres" &&
-          (filteredGenres.length === 0 ? (
-            <p className="px-1.5 py-2 text-xs text-muted-foreground">No genres found.</p>
-          ) : (
-            filteredGenres.map((g) => (
-              <button
-                key={g.name}
-                onClick={() => (useLibraryGenres ? onGenreClick(g.name) : select("genre", g.name))}
-                className={cn(
-                  "flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-sm hover:bg-accent",
-                  (useLibraryGenres
-                    ? activeGenre === g.name || (filter?.mode === "genre" && filter.value === g.name)
-                    : filter?.mode === "genre" && filter.value === g.name) && "bg-accent font-medium",
-                )}
-              >
-                <span className="min-w-0 flex-1 truncate">{g.name}</span>
-                <span className="shrink-0 text-xs text-muted-foreground">{g.count}</span>
-              </button>
-            ))
           ))}
         {mode === "artists" &&
           (filteredArtists.length === 0 ? (
@@ -456,6 +545,21 @@ export function LibrarySidebar({
           ))}
       </div>
 
+      <div className="flex items-center gap-1.5 border-t px-2 py-1.5">
+        <button
+          onClick={() => void refresh()}
+          disabled={indexing}
+          className="flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-1 text-[11px] font-medium hover:bg-accent disabled:opacity-60"
+          title="Re-scan the Library folder for new, changed and removed files"
+        >
+          <RefreshCw className={cn("h-3 w-3", indexing && "animate-spin")} />
+          Refresh
+        </button>
+        <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground" title={refreshNote ?? undefined}>
+          {indexing ? describeProgress(progress) : (refreshNote ?? "")}
+        </span>
+      </div>
+
       <div
         className="absolute -right-1 top-0 h-full w-2 cursor-col-resize"
         onMouseDown={startResize}
@@ -465,7 +569,7 @@ export function LibrarySidebar({
   );
 }
 
-/** Whether `file` matches the current sidebar filter (folder/genre/artist). */
+/** Whether `file` matches the current sidebar filter (folder/genre/album/artist). */
 export function matchesSidebarFilter(
   file: AudioFile,
   tags: Record<string, TagData>,
@@ -477,7 +581,7 @@ export function matchesSidebarFilter(
     return file.path === filter.value || file.path.startsWith(filter.value + sep);
   }
   const t = tags[file.path];
-  if (filter.mode === "genre") return (t?.genre ?? "") === filter.value;
+  if (filter.mode === "facet") return matchesFacet(t, filter.pick);
   if (filter.mode === "group") return (t?.trackId ?? "") === filter.value;
   return (t?.artist ?? "") === filter.value;
 }

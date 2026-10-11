@@ -9,7 +9,7 @@ import {
 
 describe("decideGenreClick", () => {
   const empty: SessionSource = { kind: "empty" };
-  const genre: SessionSource = { kind: "genre", genre: "House" };
+  const genre: SessionSource = { kind: "facet", facet: "genre", name: "House", artist: "" };
   const manual: SessionSource = { kind: "manual" };
 
   it("loads straight away in an empty or genre session", () => {
@@ -43,14 +43,21 @@ describe("decideGenreClick", () => {
 describe("afterManualAdd", () => {
   it("flips every source, genre sessions included, to manual", () => {
     expect(afterManualAdd({ kind: "empty" })).toEqual({ kind: "manual" });
-    expect(afterManualAdd({ kind: "genre", genre: "House" })).toEqual({ kind: "manual" });
+    expect(afterManualAdd({ kind: "facet", facet: "genre", name: "House", artist: "" })).toEqual({ kind: "manual" });
     expect(afterManualAdd({ kind: "manual" })).toEqual({ kind: "manual" });
   });
 });
 
 describe("tabTitle", () => {
   it("uses the genre name for a genre session", () => {
-    expect(tabTitle({ kind: "genre", genre: "Deep House" }, ["D:\\Music\\a.mp3"])).toBe("Deep House");
+    expect(tabTitle({ kind: "facet", facet: "genre", name: "Deep House", artist: "" }, ["D:\\Music\\a.mp3"])).toBe("Deep House");
+  });
+
+  it("names an album tab with its album artist, and a none bucket by its label", () => {
+    expect(tabTitle({ kind: "facet", facet: "album", name: "Greatest Hits", artist: "Queen" }, ["a"])).toBe(
+      "Greatest Hits — Queen",
+    );
+    expect(tabTitle({ kind: "facet", facet: "genre", name: "", artist: "" }, ["a"])).toBe("No genre");
   });
 
   it("uses the shared folder for a manual session", () => {

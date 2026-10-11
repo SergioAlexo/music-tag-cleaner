@@ -56,4 +56,11 @@ describe("migrate", () => {
     const old = { ...DEFAULT_SETTINGS, visibleColumns: ["bpm", "title", "rating"] };
     expect(migrate(old, 15).visibleColumns).toEqual(["bpm", "title", "rating", "key"]);
   });
+
+  it("v17 adds libraryAutoRefresh, off by default, without touching anything else", () => {
+    const next = migrate({ ...DEFAULT_SETTINGS, keyNotation: "camelot" }, 16);
+    expect(next.libraryAutoRefresh).toBe(false);
+    expect(next.keyNotation).toBe("camelot");
+    expect(next.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
+  });
 });

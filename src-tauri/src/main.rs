@@ -131,6 +131,14 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .on_window_event(|window, event| {
+            // B4 "snapshot on exit": best effort, VACUUM INTO of a small file.
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                if window.label() == "main" {
+                    commands::organize::snapshot_on_exit(window.app_handle());
+                }
+            }
+        })
         .setup(|_app| {
             #[cfg(windows)]
             if let Some(win) = _app.get_webview_window("main") {
@@ -219,6 +227,8 @@ fn main() {
             commands::library_index::library_stats,
             commands::library_index::library_genres,
             commands::library_index::library_paths_with_genre,
+            commands::library_index::library_facets,
+            commands::library_index::library_paths_with_facet,
             commands::library_index::retag_field,
             commands::library_index::reindex_library_paths,
             commands::artwork::artwork_search_musicbrainz,
@@ -229,6 +239,14 @@ fn main() {
             commands::artwork::artwork_clusters,
             commands::artwork::artwork_blocklist_set,
             commands::artwork::artwork_flagged,
+            commands::organize::organize_preview,
+            commands::organize::organize_move,
+            commands::organize::organize_undo,
+            commands::organize::library_db_info,
+            commands::organize::set_library_db_path,
+            commands::organize::export_library_snapshot,
+            commands::organize::restore_library_snapshot,
+            commands::organize::set_snapshot_config,
             commands::demucs::demucs_info,
             commands::demucs::install_demucs,
             commands::demucs::separate_stems,

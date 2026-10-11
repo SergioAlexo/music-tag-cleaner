@@ -5,7 +5,7 @@ import type { Settings } from "../types";
 import { DEFAULT_STEM_OPTIONS } from "../types";
 import { DEFAULT_FLAG_EXTRA_CHARS, DEFAULT_REPLACEMENTS } from "../lib/standardize";
 
-export const CURRENT_SETTINGS_VERSION = 16;
+export const CURRENT_SETTINGS_VERSION = 18;
 
 export const DEFAULT_SETTINGS: Settings = {
   aiBackend: "ollama",
@@ -27,9 +27,16 @@ export const DEFAULT_SETTINGS: Settings = {
   djApp: { primary: "other", secondary: "other" },
   lastFolder: "",
   libraryFolder: "",
+  collectionRoot: "",
+  organizePattern: "{genre}/{artist} - {title}.{ext}",
+  autoMoveOnSave: false,
+  snapshotFolder: "",
+  snapshotOnExit: false,
+  snapshotKeep: 10,
   rekordboxXmlPath: "",
   rekordboxXmlMtime: 0,
   keyNotation: "stored",
+  libraryAutoRefresh: false,
   theme: "system",
   visibleColumns: [
     "preview",
@@ -138,6 +145,9 @@ export function mergeWithDefaults(saved: Partial<Settings>): Settings {
  * v16 adds `keyNotation` (filled in by the merge), puts the BPM and Key columns
  * on by default, and forgets the rekordbox.xml mtime once more: imports made
  * before v16 stored no Rating, and only a re-import reads it.
+ * v17 adds `libraryAutoRefresh` (default off), filled in by the merge; no
+ * migration logic. (The index also re-reads every file once for the BPM/key
+ * tags it now stores; that is its own INDEX_VERSION, not a setting.)
  */
 export function migrate(s: Settings, savedVersion: number): Settings {
   const next = { ...s };
@@ -214,6 +224,9 @@ export function migrate(s: Settings, savedVersion: number): Settings {
     }
     next.visibleColumns = cols;
   }
+  // v18: collectionRoot, organizePattern, autoMoveOnSave, snapshotFolder,
+  // snapshotOnExit, snapshotKeep. All filled in by the DEFAULT_SETTINGS merge,
+  // so no data step is needed.
   next.settingsVersion = CURRENT_SETTINGS_VERSION;
   return next;
 }

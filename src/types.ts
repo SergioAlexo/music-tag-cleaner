@@ -277,6 +277,17 @@ export interface Settings {
    * last opened to work on), which may or may not be inside it.
    */
   libraryFolder: string;
+  /** B4: destination folder for "Move to collection" (empty = feature unconfigured). */
+  collectionRoot: string;
+  /** B4: tokens {genre} {album} {albumartist} {artist} {title} {year} {bpm} {key} {trackid} {ext}. */
+  organizePattern: string;
+  /** B4: after a tag write, move saved files that sit outside collectionRoot into it. */
+  autoMoveOnSave: boolean;
+  /** B4: folder for library snapshots (sqlite + library.json). The live db path lives in the backend. */
+  snapshotFolder: string;
+  snapshotOnExit: boolean;
+  /** B4: how many library-*.sqlite snapshots to keep in snapshotFolder. */
+  snapshotKeep: number;
   /** Path to a `rekordbox.xml` collection export, read for BPM/key (D0). */
   rekordboxXmlPath: string;
   /** The XML file's mtime (Unix seconds) as of the last successful import,
@@ -284,6 +295,8 @@ export interface Settings {
   rekordboxXmlMtime: number;
   /** How the Key column is shown: as stored in the file/Rekordbox, Camelot (8A) or Open Key (3m). */
   keyNotation: KeyNotation;
+  /** Re-run the incremental library scan whenever the window regains focus (at most once a minute). Off by default. */
+  libraryAutoRefresh: boolean;
   /**
    * "system" follows the OS light/dark setting and is the default —
    * there is no in-app theme switcher any more. The explicit values are
@@ -588,6 +601,9 @@ export interface IndexedTrack {
   originalArtist?: string | null;
   trackId?: string | null;
   rating?: number | null;
+  /** The file's own BPM / key tags (index v4). `bpm`/`key` below are Rekordbox's. */
+  tagBpm?: string | null;
+  tagKey?: string | null;
   bpm?: number | null;
   key?: string | null;
 }
@@ -705,6 +721,8 @@ export function indexedToTags(t: IndexedTrack): TagData {
     originalArtist: t.originalArtist ?? undefined,
     trackId: t.trackId ?? undefined,
     rating: t.rating ?? undefined,
+    bpm: t.tagBpm ?? undefined,
+    key: t.tagKey ?? undefined,
     hasCoverArt: t.hasCoverArt,
     allFields: {},
   };

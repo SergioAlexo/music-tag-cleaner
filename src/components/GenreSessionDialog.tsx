@@ -7,13 +7,13 @@ import { Button, Card } from "./ui";
 export type GenreSessionChoice = Exclude<GenreClickChoice, "ask">;
 
 /**
- * Shown when a library genre is clicked while the batch was built by hand
+ * Shown when a library genre or album is clicked while the batch was built by hand
  * (folder, files, drop). The default is a new tab, which loses nothing;
  * Replace states exactly what it forgets. Edits are already written to the
  * files, so only the list and the undo history are at stake.
  */
 export function GenreSessionDialog({
-  genre,
+  label,
   sessionLabel,
   fileCount,
   undoSteps,
@@ -21,7 +21,8 @@ export function GenreSessionDialog({
   onChoose,
   onCancel,
 }: {
-  genre: string;
+  /** What was clicked: a genre or an album ("Greatest Hits — Queen"). */
+  label: string;
   /** Folder name (or "Files") the current session is known by. */
   sessionLabel: string;
   fileCount: number;
@@ -39,7 +40,7 @@ export function GenreSessionDialog({
         <div className="flex items-start justify-between gap-4 border-b px-5 py-3.5">
           <div>
             <h2 className="flex items-center gap-2 text-sm font-semibold">
-              <Music2 className="h-4 w-4" /> Open &ldquo;{genre}&rdquo;
+              <Music2 className="h-4 w-4" /> Open &ldquo;{label}&rdquo;
             </h2>
             <p className="text-xs text-muted-foreground">
               You have a session open: {fileCount} file{fileCount === 1 ? "" : "s"} from{" "}
@@ -58,7 +59,7 @@ export function GenreSessionDialog({
             Replace session
           </Button>
           <Button variant="secondary" onClick={() => onChoose("filter", remember)}>
-            Filter this batch to the genre
+            Filter this batch to it
           </Button>
           <p className="text-xs text-muted-foreground">
             Your edits are already saved to the files. Replace only forgets this list and its undo

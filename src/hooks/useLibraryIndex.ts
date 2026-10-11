@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Notify } from "./useFiles";
+import type { Facet, FacetCount } from "../lib/facets";
 import {
   indexedToFile,
   indexedToTags,
@@ -32,7 +33,7 @@ import {
 export function useLibraryIndex(notify: Notify) {
   const [tracks, setTracks] = useState<IndexedTrack[]>([]);
   const [stats, setStats] = useState<LibraryStats | null>(null);
-  const [genres, setGenres] = useState<GenreCount[]>([]);
+  const [facets, setFacets] = useState<Record<Facet, FacetCount[]>>({ genre: [], album: [] });
   const [indexing, setIndexing] = useState(false);
   const [progress, setProgress] = useState<IndexProgress | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -42,12 +43,13 @@ export function useLibraryIndex(notify: Notify) {
   const refreshStats = useCallback(async () => {
     try {
       // Independent queries — issued together rather than one after the other.
-      const [nextStats, nextGenres] = await Promise.all([
+      const [nextStats, genre, album] = await Promise.all([
         invoke<LibraryStats>("library_stats"),
-        invoke<GenreCount[]>("library_genres"),
+        invoke<FacetCount[]>("library_facets", { facet: "genre" }),
+        invoke<FacetCount[]>("library_facets", { facet: "album" }),
       ]);
       setStats(nextStats);
-      setGenres(nextGenres);
+      setFacets({ genre, album });
     } catch {
       // A missing/locked database is not worth a toast on every poll — the
       // Settings card shows "not indexed yet", which is the honest state.
@@ -98,8 +100,12 @@ export function useLibraryIndex(notify: Notify) {
     [refresh],
   );
 
+  /** True while any scan (startup, Settings, Refresh) is running. */
+  const scanning = useRef(false);
+
   const runIndex = useCallback(
     async (rescanAll = false): Promise<IndexSummary> => {
+      scanning.current = true;
       setIndexing(true);
       setProgress(null);
       try {
@@ -107,11 +113,23 @@ export function useLibraryIndex(notify: Notify) {
         await refresh();
         return summary;
       } finally {
+        scanning.current = false;
         setIndexing(false);
         setProgress(null);
       }
     },
     [refresh],
+  );
+
+  /**
+   * The sidebar's Refresh: the same incremental scan (mtime + size, so
+   * unchanged files are skipped unopened), but a no-op when a scan is already
+   * running, so a button press, the focus-triggered refresh and the startup
+   * index can never stack two walks of the same folder. Null = skipped.
+   */
+  const refreshFromDisk = useCallback(
+    async (): Promise<IndexSummary | null> => (scanning.current ? null : runIndex(false)),
+    [runIndex],
   );
 
   const clear = useCallback(async () => {
@@ -121,6 +139,13 @@ export function useLibraryIndex(notify: Notify) {
 
   const pathsWithGenre = useCallback(
     (genre: string) => invoke<string[]>("library_paths_with_genre", { genre }),
+    [],
+  );
+
+  /** Indexed paths in one facet bucket; an empty `name` is the "none" bucket. */
+  const pathsWithFacet = useCallback(
+    (facet: Facet, name: string, artist = "") =>
+      invoke<string[]>("library_paths_with_facet", { facet, name, artist }),
     [],
   );
 
@@ -152,6 +177,13 @@ export function useLibraryIndex(notify: Notify) {
     [refresh],
   );
 
+  // The genre list other screens use (Settings, the playlist matcher, the
+  // genre picker): real genres only. The "none" bucket is a sidebar concept.
+  const genres = useMemo<GenreCount[]>(
+    () => facets.genre.filter((g) => g.name).map((g) => ({ name: g.name, count: g.count })),
+    [facets.genre],
+  );
+
   const files = useMemo<AudioFile[]>(() => tracks.map(indexedToFile), [tracks]);
   const tags = useMemo<Record<string, TagData>>(() => {
     const out: Record<string, TagData> = {};
@@ -165,6 +197,7 @@ export function useLibraryIndex(notify: Notify) {
     tags,
     stats,
     genres,
+    facets,
     indexing,
     progress,
     loaded,
@@ -173,8 +206,10 @@ export function useLibraryIndex(notify: Notify) {
     getRoots,
     setRoots,
     runIndex,
+    refreshFromDisk,
     clear,
     pathsWithGenre,
+    pathsWithFacet,
     reindexPaths,
     importRekordboxTags,
   };

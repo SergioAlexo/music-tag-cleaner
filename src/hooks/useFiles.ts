@@ -167,6 +167,17 @@ export function useFiles(
     setSource(nextSource);
   };
 
+  /**
+   * Adds tracks picked from the library search to the batch, ticking them like
+   * any other add. The batch is hand-built from here on, so a later genre
+   * click asks instead of silently replacing it.
+   */
+  const addIndexed = (incoming: AudioFile[]) => {
+    if (!incoming.length) return;
+    merge(incoming);
+    setSource(afterManualAdd);
+  };
+
   /** The batch as a session tab keeps it while that tab is in the background. */
   const snapshot = () => ({ files, selected: [...selected], source });
 
@@ -254,6 +265,7 @@ export function useFiles(
     setManySelected,
     clearList,
     replaceWith,
+    addIndexed,
     snapshot,
     restore,
     refresh,

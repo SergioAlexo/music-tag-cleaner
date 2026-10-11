@@ -44,6 +44,7 @@ import type { GenreGroup } from "../lib/genres";
 import { Badge, Button, Card, CardHeader, Row, cn, inputClass, selectClass } from "../components/ui";
 import { Combobox } from "../components/Combobox";
 import { RekordboxMixxxExportDialog } from "../components/RekordboxMixxxExportDialog";
+import { OrganizeSettingsCard } from "../components/OrganizeSettingsCard";
 import type { LibraryIndexApi } from "../hooks/useLibraryIndex";
 
 interface Props {
@@ -491,6 +492,18 @@ function LibraryIndexCard({
               <option value="camelot">Camelot (8A)</option>
               <option value="openkey">Open Key (1m)</option>
             </select>
+          </Row>
+        </div>
+
+        <div className="mt-3 border-t pt-3">
+          <Row
+            label="Refresh the library when the window gets focus"
+            hint="Re-scans the Library folder for new, changed and removed files whenever you switch back to the app (at most once a minute). Cheap: unchanged files are skipped without being opened. The sidebar's Refresh button does the same on demand."
+          >
+            <Toggle
+              checked={settings.libraryAutoRefresh}
+              onChange={(v) => onUpdate((prev) => ({ ...prev, libraryAutoRefresh: v }))}
+            />
           </Row>
         </div>
 
@@ -1610,6 +1623,13 @@ export function SettingsPage({
       </Card>
 
       <LibraryIndexCard settings={settings} onUpdate={onUpdate} libraryIndex={libraryIndex} notify={notify} />
+
+      <OrganizeSettingsCard
+        settings={settings}
+        onUpdate={onUpdate}
+        notify={notify}
+        onLibraryReplaced={() => libraryIndex.refresh()}
+      />
 
       <Card>
         <CardHeader

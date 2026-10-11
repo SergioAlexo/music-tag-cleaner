@@ -3,11 +3,12 @@
  * Kept out of the hooks so the decision tree is unit-testable without React
  * or Tauri.
  */
+import { facetLabel, type FacetPick } from "./facets";
 
 /** How the current batch was built. */
 export type SessionSource =
   | { kind: "empty" }
-  | { kind: "genre"; genre: string } // loaded from the library sidebar
+  | ({ kind: "facet" } & FacetPick) // a genre / album loaded from the library sidebar
   | { kind: "manual" }; // folder / files / drop / Open with / YouTube "Add to batch"
 
 export const EMPTY_SOURCE: SessionSource = { kind: "empty" };
@@ -23,7 +24,7 @@ export function afterManualAdd(_prev: SessionSource): SessionSource {
   return MANUAL_SOURCE;
 }
 
-/** What a genre click does in a hand-built batch (`settings.genreClickInManualSession`). */
+/** What a click on a sidebar genre / album does in a hand-built batch (`settings.genreClickInManualSession`). */
 export type GenreClickChoice = "ask" | "newTab" | "replace" | "filter";
 
 /** What a click on a library genre should do. */
@@ -70,12 +71,12 @@ function parentName(p: string): string | null {
 }
 
 /**
- * Tab label for a session: a genre tab is the genre; a manual tab is the
+ * Tab label for a session: a genre / album tab is its name; a manual tab is the
  * folder its files share (the usual "opened one folder" case) or "Files"
  * when they come from several places; an empty tab is "New tab".
  */
 export function tabTitle(source: SessionSource, paths: string[]): string {
-  if (source.kind === "genre") return source.genre;
+  if (source.kind === "facet") return facetLabel(source);
   if (source.kind === "empty" || paths.length === 0) return "New tab";
   const folders = new Set(paths.map((p) => parentName(p)));
   const only = folders.size === 1 ? [...folders][0] : null;
