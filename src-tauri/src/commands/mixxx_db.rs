@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection, OpenFlags};
 
 use super::dj_playlists::{path_key, DjNode, DjOp, DjSnapshot, DjTrack, OpResult};
+use super::dj_sync::{self, ExtrasReport, MixxxExtras, SyncMeta};
 
 pub const SMART_PREFIX: &str = "[smart] ";
 
@@ -45,8 +46,15 @@ impl Drop for TempFile {
     }
 }
 
-pub fn read_snapshot(db: &Path) -> Result<DjSnapshot, String> {
-    // Read a copy: a running Mixxx may hold locks or be mid-write.
+/// A throwaway copy of the database (plus its -wal) opened read-only: a running
+/// Mixxx may hold locks or be mid-write. Guards delete the copies on drop.
+pub(crate) struct MixxxCopy {
+    pub conn: Connection,
+    _db: TempFile,
+    _wal: Option<TempFile>,
+}
+
+pub(crate) fn open_copy(db: &Path) -> Result<MixxxCopy, String> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -56,11 +64,56 @@ pub fn read_snapshot(db: &Path) -> Result<DjSnapshot, String> {
     // A live Mixxx may keep recent changes in a -wal file; carry it along.
     let wal = PathBuf::from(format!("{}-wal", db.display()));
     let tmp_wal = PathBuf::from(format!("{}-wal", tmp.0.display()));
-    let _wal_guard = if wal.is_file() && std::fs::copy(&wal, &tmp_wal).is_ok() { Some(TempFile(tmp_wal)) } else { None };
+    let wal_guard = if wal.is_file() && std::fs::copy(&wal, &tmp_wal).is_ok() { Some(TempFile(tmp_wal)) } else { None };
     let conn = Connection::open_with_flags(&tmp.0, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())?;
-    let mut snap = read_from_conn(&conn)?;
+    Ok(MixxxCopy { conn, _db: tmp, _wal: wal_guard })
+}
+
+pub fn read_snapshot(db: &Path) -> Result<DjSnapshot, String> {
+    let copy = open_copy(db)?;
+    let mut snap = read_from_conn(&copy.conn)?;
     snap.db_path = Some(db.to_string_lossy().into_owned());
     Ok(snap)
+}
+
+/// Snapshot plus the per-track metadata C2's sync compares.
+pub fn read_sync(db: &Path) -> Result<(DjSnapshot, Vec<SyncMeta>), String> {
+    let copy = open_copy(db)?;
+    let mut snap = read_from_conn(&copy.conn)?;
+    snap.db_path = Some(db.to_string_lossy().into_owned());
+    let meta = read_meta(&copy.conn)?;
+    Ok((snap, meta))
+}
+
+/// Mixxx stores `color` as an RGB integer (NULL or 0 = none) and keeps its
+/// beat grid in a separate blob; `grid` says whether one exists, because a
+/// BPM written next to a grid would be overwritten by it.
+pub(crate) fn read_meta(conn: &Connection) -> Result<Vec<SyncMeta>, String> {
+    let e = |e: rusqlite::Error| format!("Mixxx library: {e}");
+    let mut stmt = conn
+        .prepare(
+            "SELECT tl.location, l.bpm, l.key, l.rating, l.timesplayed, l.comment, l.color,
+                    (l.beats IS NOT NULL AND length(l.beats) > 0)
+             FROM library l JOIN track_locations tl ON tl.id = l.location
+             WHERE COALESCE(l.mixxx_deleted, 0) = 0",
+        )
+        .map_err(e)?;
+    let rows = stmt
+        .query_map([], |r| {
+            let color = r.get::<_, Option<i64>>(6)?.filter(|c| *c > 0).map(|c| format!("#{:06x}", c & 0xff_ffff));
+            Ok(SyncMeta {
+                path: r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                bpm: r.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
+                key: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                rating: r.get::<_, Option<i64>>(3)?.unwrap_or(0).clamp(0, 5) as u8,
+                plays: r.get::<_, Option<i64>>(4)?.unwrap_or(0).max(0),
+                comment: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                color: color.unwrap_or_default(),
+                grid: r.get::<_, Option<i64>>(7)?.unwrap_or(0) != 0,
+            })
+        })
+        .map_err(e)?;
+    Ok(rows.flatten().filter(|m| !m.path.is_empty()).collect())
 }
 
 pub(crate) fn read_from_conn(conn: &Connection) -> Result<DjSnapshot, String> {
@@ -220,6 +273,17 @@ pub fn apply_ops(db: &Path, ops: &[DjOp]) -> Result<Vec<OpResult>, String> {
     if ops.is_empty() {
         return Ok(vec![]);
     }
+    apply_ops_with(db, ops, &MixxxExtras::default()).map(|(r, _)| r)
+}
+
+/// `apply_ops` plus C2's sync extras (moved-file relocations and track
+/// metadata), all inside the SAME backup + single transaction so a sync is
+/// all-or-nothing. Relocations run first (they change which path a track is
+/// found under), then playlist ops, then metadata.
+pub fn apply_ops_with(db: &Path, ops: &[DjOp], extras: &MixxxExtras) -> Result<(Vec<OpResult>, ExtrasReport), String> {
+    if ops.is_empty() && extras.is_empty() {
+        return Ok((vec![], ExtrasReport::default()));
+    }
     backup(db)?;
     let mut conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(|e| e.to_string())?;
     conn.busy_timeout(std::time::Duration::from_secs(3)).map_err(|e| e.to_string())?;
@@ -229,13 +293,16 @@ pub fn apply_ops(db: &Path, ops: &[DjOp]) -> Result<Vec<OpResult>, String> {
     // them off.
     conn.pragma_update(None, "foreign_keys", false).map_err(|e| e.to_string())?;
     let tx = conn.transaction().map_err(|e| format!("Mixxx database is busy ({e}). Is Mixxx still closing?"))?;
+    let mut report = ExtrasReport::default();
+    dj_sync::relocate(&tx, &extras.relocations, &mut report)?;
     let by_path = track_ids_by_path(&tx)?;
     let mut results = Vec::with_capacity(ops.len());
     for op in ops {
         results.push(apply_one(&tx, &by_path, op)?);
     }
+    dj_sync::write_meta(&tx, &by_path, &extras.meta, &mut report)?;
     tx.commit().map_err(|e| e.to_string())?;
-    Ok(results)
+    Ok((results, report))
 }
 
 fn track_ids_by_path(conn: &Connection) -> Result<HashMap<String, i64>, String> {

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OpenFlags};
 
 use super::dj_playlists::{DjNode, DjSnapshot, DjTrack};
+use super::dj_sync::SyncMeta;
 use super::sqlcipher::{decrypt_database, REKORDBOX_PASSPHRASE};
 
 pub fn default_db_path() -> Option<PathBuf> {
@@ -48,14 +49,63 @@ fn bpm_from_db(raw: i64) -> f64 {
 }
 
 pub fn read_snapshot(db: &Path) -> Result<DjSnapshot, String> {
+    read_sync(db).map(|(s, _)| s)
+}
+
+/// The snapshot plus the per-track metadata C2's sync compares, from ONE
+/// decryption (the key derivation is the slow part).
+pub fn read_sync(db: &Path) -> Result<(DjSnapshot, Vec<SyncMeta>), String> {
     let tmp = TempDb(temp_name());
     decrypt_database(db, &tmp.0, REKORDBOX_PASSPHRASE).map_err(|e| {
         format!("Couldn't read Rekordbox's library ({e}). If Rekordbox is open, close it and try again.")
     })?;
     let conn = Connection::open_with_flags(&tmp.0, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())?;
     let snap = read_from_plain(&conn)?;
+    let meta = read_meta(&conn)?;
     drop(conn);
-    Ok(DjSnapshot { db_path: Some(db.to_string_lossy().into_owned()), ..snap })
+    Ok((DjSnapshot { db_path: Some(db.to_string_lossy().into_owned()), ..snap }, meta))
+}
+
+/// Rekordbox's eight track colours (`djmdContent.ColorID` 1-8, in the order its
+/// colour picker shows them) as the RGB values its rekordbox.xml format uses.
+/// `djmdColor` only carries the owner's *names* for them (e.g. "Banger"), not
+/// the RGB, so the table is fixed here. 0 = no colour.
+pub const COLOR_RGB: [&str; 8] =
+    ["#ff007f", "#ff0000", "#ffa500", "#ffff00", "#00ff00", "#25fde9", "#0000ff", "#660099"];
+
+fn color_from_id(id: &str) -> String {
+    id.trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|n| (1..=8).contains(n))
+        .map(|n| COLOR_RGB[n - 1].to_string())
+        .unwrap_or_default()
+}
+
+pub(crate) fn read_meta(conn: &Connection) -> Result<Vec<SyncMeta>, String> {
+    let e = |e: rusqlite::Error| format!("Rekordbox library: {e}");
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.FolderPath, c.BPM, k.ScaleName, c.Rating, c.DJPlayCount, c.Commnt, c.ColorID
+             FROM djmdContent c LEFT JOIN djmdKey k ON k.ID = c.KeyID
+             WHERE COALESCE(c.rb_local_deleted, 0) = 0",
+        )
+        .map_err(e)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(SyncMeta {
+                path: r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                bpm: bpm_from_db(r.get::<_, Option<i64>>(1)?.unwrap_or(0)),
+                key: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                rating: r.get::<_, Option<i64>>(3)?.unwrap_or(0).clamp(0, 5) as u8,
+                plays: r.get::<_, Option<i64>>(4)?.unwrap_or(0).max(0),
+                comment: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                color: color_from_id(&r.get::<_, Option<String>>(6)?.unwrap_or_default()),
+                grid: false,
+            })
+        })
+        .map_err(e)?;
+    Ok(rows.flatten().filter(|m| !m.path.is_empty()).collect())
 }
 
 pub(crate) fn read_from_plain(conn: &Connection) -> Result<DjSnapshot, String> {

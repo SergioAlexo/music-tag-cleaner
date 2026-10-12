@@ -1,3 +1,4 @@
+import type { SyncSettings } from "./lib/djSync";
 import type { GenreClickChoice } from "./lib/sessionTabs";
 
 export interface AudioFile {
@@ -301,6 +302,8 @@ export interface Settings {
   libraryAutoRefresh: boolean;
   /** D1: run the local AI-control bridge (127.0.0.1 only, bearer token). Off by default. */
   aiControl: boolean;
+  /** C2: Rekordbox <-> Mixxx sync options (direction per item, Mixxx target, master side, relocate, on-start check). */
+  djSync: SyncSettings;
   /** D2: id of the chosen theme plugin; "" = follow the OS (the default). */
   themeId: string;
   /** D2: per-plugin state: enabled, the content hash the person approved, and its settings values. */

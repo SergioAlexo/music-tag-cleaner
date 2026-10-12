@@ -11,6 +11,7 @@ pub mod convert;
 pub mod demucs;
 pub(crate) mod download;
 pub mod dj_playlists;
+pub mod dj_sync;
 pub mod duplicates;
 pub mod ffmpeg;
 pub mod files;

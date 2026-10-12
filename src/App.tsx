@@ -269,6 +269,30 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
 
+  // C2: opt-in (`djSync.onStart`) look for Rekordbox/Mixxx differences once at
+  // launch. Read-only and quiet when nothing differs; it never applies anything.
+  const djSyncCheckedRef = useRef(false);
+  useEffect(() => {
+    if (!loaded || djSyncCheckedRef.current || !settings.djSync?.onStart) return;
+    djSyncCheckedRef.current = true;
+    void (async () => {
+      try {
+        const { checkForChanges } = await import("./lib/djSyncRun");
+        const c = await checkForChanges(settings.djSync);
+        const n = c.toMixxx + c.toRekordbox + c.conflicts;
+        if (n > 0) {
+          notify(
+            `Rekordbox ⇄ Mixxx: ${c.toMixxx} change(s) for Mixxx, ${c.toRekordbox} for Rekordbox, ${c.conflicts} conflict(s). Open Playlists > Sync to review.`,
+            "info",
+          );
+        }
+      } catch {
+        /* a library that can't be read (not installed) is not worth a startup toast */
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded]);
+
   // Opt-in (`libraryAutoRefresh`): re-scan when the window regains focus, which
   // is when new downloads are most likely to be waiting. Throttled, and quiet
   // unless the scan actually found something. A file watcher would need a new
@@ -2515,6 +2539,8 @@ This rewrites the ${meta.singular} tag on ${
             <PlaylistsPage
               notify={notify}
               keyNotation={settings.keyNotation}
+              settings={settings}
+              savePatch={savePatch}
               onLoadSession={(paths) => void loadPlaylistSession(paths)}
             />
           ) : page === "ytmusic" ? (

@@ -312,6 +312,12 @@ export function planFacetPlaylists(tracks: DjTrack[], facet: PlaylistFacet, valu
 
 // --- rekordbox.xml --------------------------------------------------------
 
+/** Extra per-track attributes for the sync export (rating is 0-5 stars). */
+export interface XmlOptions {
+  extras?: Map<string, { rating?: number; plays?: number; color?: string }>;
+  extraPaths?: string[];
+}
+
 export type XmlNode =
   | { type: "folder"; name: string; children: XmlNode[] }
   | { type: "playlist"; name: string; paths: string[] };
@@ -347,15 +353,25 @@ function nodeCount(n: XmlNode): number {
  * (which `rekordbox_import.rs` reads back), extended with folders and the
  * metadata a re-import should keep (genre, BPM, key).
  */
-export function buildRekordboxTreeXml(nodes: XmlNode[], tracks: DjTrack[]): string {
+export function buildRekordboxTreeXml(nodes: XmlNode[], tracks: DjTrack[], opts: XmlOptions = {}): string {
   const byKey = new Map(tracks.map((t) => [pathKey(t.path), t]));
   const paths: string[] = [];
-  collectPaths(nodes, paths, new Set());
+  const seen = new Set<string>();
+  collectPaths(nodes, paths, seen);
+  // Tracks that carry metadata but belong to no exported playlist (C2 sync).
+  for (const p of opts.extraPaths ?? []) {
+    const k = pathKey(p);
+    if (!seen.has(k)) {
+      seen.add(k);
+      paths.push(p);
+    }
+  }
   const ids = new Map<string, number>();
   const collection = paths.map((p, i) => {
     const id = i + 1;
     ids.set(pathKey(p), id);
     const t = byKey.get(pathKey(p)) ?? null;
+    const x = opts.extras?.get(pathKey(p));
     const file = p.replace(/\\/g, "/").split("/").pop() ?? p;
     const ext = file.includes(".") ? file.split(".").pop()!.toLowerCase() : "";
     const attrs = [
@@ -370,6 +386,9 @@ export function buildRekordboxTreeXml(nodes: XmlNode[], tracks: DjTrack[]): stri
       t?.bpm ? `AverageBpm="${t.bpm.toFixed(2)}"` : "",
       t?.key ? `Tonality="${escapeXmlAttr(t.key)}"` : "",
       t?.comment?.trim() ? `Comments="${escapeXmlAttr(t.comment.trim())}"` : "",
+      x?.rating !== undefined ? `Rating="${Math.round(x.rating) * 51}"` : "",
+      x?.plays !== undefined ? `PlayCount="${Math.max(0, Math.round(x.plays))}"` : "",
+      x?.color ? `Colour="0x${x.color.replace(/^#/, "").toUpperCase()}"` : "",
       `Location="${escapeXmlAttr(pathToLocation(p))}"`,
     ]
       .filter(Boolean)
