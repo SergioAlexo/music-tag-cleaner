@@ -42,6 +42,8 @@ import { ALLOWED_DESCRIPTION, DEFAULT_FLAG_EXTRA_CHARS } from "../lib/standardiz
 import { SHORTCUTS, comboFromEvent, shortcutFor } from "../lib/shortcuts";
 import type { GenreGroup } from "../lib/genres";
 import { Badge, Button, Card, CardHeader, Row, cn, inputClass, selectClass } from "../components/ui";
+import { ThemePicker } from "../components/ThemePicker";
+import type { PluginManifest } from "../plugins/manifest";
 import { Combobox } from "../components/Combobox";
 import { RekordboxMixxxExportDialog } from "../components/RekordboxMixxxExportDialog";
 import { OrganizeSettingsCard } from "../components/OrganizeSettingsCard";
@@ -50,6 +52,8 @@ import type { LibraryIndexApi } from "../hooks/useLibraryIndex";
 
 interface Props {
   settings: Settings;
+  /** Theme plugins found in the plugins folder (D2). */
+  installedThemes: PluginManifest[];
   onSave: (settings: Settings) => void;
   /** Read-modify-write against the newest settings (see `useSettings.update`).
    * Every single-field change goes through this: building the whole object
@@ -644,6 +648,7 @@ function LibraryIndexCard({
 
 export function SettingsPage({
   settings,
+  installedThemes,
   onSave,
   onUpdate,
   onRenameGenre,
@@ -917,6 +922,17 @@ export function SettingsPage({
         <h1 className="text-xl font-bold">Settings</h1>
         <p className="text-sm text-muted-foreground">Changes apply immediately</p>
       </div>
+
+      <Card>
+        <CardHeader title="Appearance" hint="Follow OS is the default. More themes can be installed from the Plugins page." />
+        <div className="px-5 py-4">
+          <ThemePicker
+            themeId={settings.themeId}
+            installed={installedThemes}
+            onPick={(id) => onUpdate((prev) => ({ ...prev, themeId: id }))}
+          />
+        </div>
+      </Card>
 
       <Card>
         <CardHeader title="AI Backend" />

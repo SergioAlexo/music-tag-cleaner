@@ -156,6 +156,13 @@ fn main() {
             bridge::bridge_set_enabled,
             bridge::bridge_status,
             bridge::bridge_respond,
+            commands::plugins::plugins_dir,
+            commands::plugins::plugins_list,
+            commands::plugins::plugins_write,
+            commands::plugins::plugins_remove,
+            commands::plugins::plugins_http,
+            commands::plugin_store::plugin_store_index,
+            commands::plugin_store::plugin_store_package,
             commands::files::scan_folder,
             commands::files::list_files,
             commands::files::import_paths,
@@ -190,6 +197,7 @@ fn main() {
             commands::backup::restore_from_backup_batch,
             commands::ai::check_ollama,
             commands::ai::ai_clean_batch,
+            commands::ai::ai_generate_text,
             commands::ai::ai_preview_prompt,
             commands::ai::ai_clean_prompt,
             commands::ai::ai_parse_clean_response,
@@ -266,6 +274,7 @@ fn main() {
             commands::claude_cli::install_claude_cli,
             commands::claude_cli::open_claude_login,
             commands::claude_cli::claude_clean_batch,
+            commands::claude_cli::claude_generate_text,
         ])
         .run(tauri::generate_context!())
         .expect("error while running MusicTagCleaner");

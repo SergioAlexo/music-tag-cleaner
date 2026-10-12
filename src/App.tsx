@@ -29,6 +29,8 @@ import { useTags } from "./hooks/useTags";
 import { OrganizeDialog, toOrganizeItem } from "./components/OrganizeDialog";
 import { LibraryPage } from "./pages/LibraryPage";
 import { ALL_COLUMNS } from "./components/TrackTable";
+import { usePlugins } from "./plugins/usePlugins";
+import { useAppTheme, useInstalledThemes } from "./plugins/useAppTheme";
 import { useActionBridge } from "./hooks/useActionBridge";
 import { useGenreLoad } from "./hooks/useGenreLoad";
 import { describeRefresh, refreshChangedAnything } from "./lib/libraryRefresh";
@@ -90,6 +92,9 @@ const SettingsPage = lazy(() =>
   import("./pages/SettingsPage").then((m) => ({ default: m.SettingsPage })),
 );
 const LogsPage = lazy(() => import("./pages/LogsPage").then((m) => ({ default: m.LogsPage })));
+const PluginsPage = lazy(() =>
+  import("./pages/PluginsPage").then((m) => ({ default: m.PluginsPage })),
+);
 const ManualAIDialog = lazy(() =>
   import("./components/ManualAIDialog").then((m) => ({ default: m.ManualAIDialog })),
 );
@@ -491,14 +496,30 @@ export default function App() {
       return next;
     });
 
+  // D2: plugins (sandboxed buttons/columns/actions) and themes. Registers plugins.* actions.
+  const pluginManager = usePlugins({
+    settings,
+    loaded,
+    savePatch,
+    notify,
+    files: filesApi.files,
+    tags: libraryTags,
+    selectedPaths: filesApi.selectedPaths,
+    showPlugins: () => setPage("plugins"),
+  });
+
   // Theme class on <html> (dark is the default, set in index.html).
   // "system" — the default since v0.13 — follows the OS setting live, so
   // flipping Windows to light mode retints the app without a restart. There
   // is no in-app switcher any more; the subscription is the whole feature.
+  // D2: a chosen theme may force light/dark (forced); otherwise the old rule applies.
+  const installedThemes = useInstalledThemes(pluginManager);
+  const forcedTheme = useAppTheme(settings.themeId, installedThemes);
+  const effectiveTheme = forcedTheme ?? settings.theme;
   useEffect(() => {
     const apply = (dark: boolean) => document.documentElement.classList.toggle("dark", dark);
-    if (settings.theme !== "system") {
-      apply(settings.theme === "dark");
+    if (effectiveTheme !== "system") {
+      apply(effectiveTheme === "dark");
       return;
     }
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
@@ -506,7 +527,7 @@ export default function App() {
     const onChange = (e: MediaQueryListEvent) => apply(e.matches);
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
-  }, [settings.theme]);
+  }, [effectiveTheme]);
 
   // Warm the code-split chunks once the first paint is done, so switching
   // pages or opening a dialog never waits on a chunk fetch. FFmpeg detection
@@ -2252,6 +2273,7 @@ This rewrites the ${meta.singular} tag on ${
     if (tags) setInspected({ file, tags });
   };
 
+
   // D1: expose the handlers above to the action registry / AI bridge (additive:
   // the toolbar keeps calling them directly). See src/lib/appActions.ts.
   useActionBridge(
@@ -2545,6 +2567,14 @@ This rewrites the ${meta.singular} tag on ${
               onOllamaChanged={() => void ai.check(settingsRef.current.ollamaUrl)}
               onFfmpegChanged={refreshFfmpeg}
             />
+          ) : page === "plugins" ? (
+            <PluginsPage
+              manager={pluginManager}
+              settings={settings}
+              notify={notify}
+              onUpdate={update}
+              generate={(prompt) => ai.generateText(prompt, settings, settings.ollamaModel)}
+            />
           ) : page === "logs" ? (
             <LogsPage
               logs={logs}
@@ -2557,6 +2587,7 @@ This rewrites the ${meta.singular} tag on ${
           ) : (
             <SettingsPage
               settings={settings}
+              installedThemes={installedThemes}
               onSave={save}
               onUpdate={update}
               onRenameGenre={renameGenreEverywhere}

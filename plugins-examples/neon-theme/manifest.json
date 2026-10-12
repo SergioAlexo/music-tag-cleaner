@@ -1,0 +1,38 @@
+{
+  "id": "neon-theme",
+  "name": "Neon",
+  "version": "1.0.0",
+  "author": "Music Tag Cleaner",
+  "description": "Dark purple with a hot-pink accent. Always dark.",
+  "apiVersion": 1,
+  "kind": "theme",
+  "permissions": [],
+  "contributes": {
+    "theme": {
+      "mode": "dark",
+      "radius": "0.5rem",
+      "dark": {
+        "background": "#0f0a1a",
+        "foreground": "#f1e9ff",
+        "card": "#17102a",
+        "card-foreground": "#f1e9ff",
+        "popover": "#130d22",
+        "popover-foreground": "#f1e9ff",
+        "primary": "#ff3ea5",
+        "primary-foreground": "#220012",
+        "secondary": "#221638",
+        "secondary-foreground": "#f1e9ff",
+        "muted": "#1b1230",
+        "muted-foreground": "#a597c4",
+        "accent": "#2c1c4a",
+        "accent-foreground": "#f1e9ff",
+        "border": "#2b1d47",
+        "input": "#35255a",
+        "ring": "#ff3ea5",
+        "destructive": "#ff5a5f",
+        "destructive-foreground": "#ffffff",
+        "violet": "#b78cff"
+      }
+    }
+  }
+}

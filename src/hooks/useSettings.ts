@@ -5,7 +5,8 @@ import type { Settings } from "../types";
 import { DEFAULT_STEM_OPTIONS } from "../types";
 import { DEFAULT_FLAG_EXTRA_CHARS, DEFAULT_REPLACEMENTS } from "../lib/standardize";
 
-export const CURRENT_SETTINGS_VERSION = 21;
+// 22 is reserved for C1 (playlists); gaps are fine.
+export const CURRENT_SETTINGS_VERSION = 23;
 
 export const DEFAULT_SETTINGS: Settings = {
   aiBackend: "ollama",
@@ -38,6 +39,9 @@ export const DEFAULT_SETTINGS: Settings = {
   keyNotation: "stored",
   libraryAutoRefresh: false,
   aiControl: false,
+  themeId: "",
+  plugins: {},
+  pluginStoreUrl: "",
   lyricsStorage: "sidecar",
   languageAppendComment: false,
   theme: "system",
@@ -241,6 +245,12 @@ export function migrate(s: Settings, savedVersion: number): Settings {
   if (savedVersion < 21) {
     // D1: aiControl (default off, filled in by the merge).
     next.aiControl = false;
+  }
+  if (savedVersion < 23) {
+    // D2: plugins + themes. Follow-the-OS stays the default (themeId "").
+    next.themeId = typeof next.themeId === "string" ? next.themeId : "";
+    next.plugins = next.plugins && typeof next.plugins === "object" ? next.plugins : {};
+    next.pluginStoreUrl = typeof next.pluginStoreUrl === "string" ? next.pluginStoreUrl : "";
   }
   next.settingsVersion = CURRENT_SETTINGS_VERSION;
   return next;

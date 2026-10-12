@@ -70,7 +70,7 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-violet: var(--violet);
-  --radius-lg: 0.625rem;
+  --radius-lg: var(--app-radius, 0.625rem);
 }
 
 @layer base {
@@ -87,7 +87,7 @@
   body {
     background-color: var(--background);
     color: var(--foreground);
-    font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    font-family: var(--app-font, "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif);
     -webkit-font-smoothing: antialiased;
     overscroll-behavior: none;
     overflow: hidden;
