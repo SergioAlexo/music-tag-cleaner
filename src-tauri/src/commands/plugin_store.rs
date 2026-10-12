@@ -254,6 +254,8 @@ mod tests {
     /// package, a package whose bytes differ from the advertised hash.
     #[test]
     fn download_install_flow_against_a_local_fixture_store() {
+        // reqwest is built with `rustls-no-provider`; main() installs ring, tests must too.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let good = make_zip(&[("manifest.json", MANIFEST), ("index.js", "// hi")]);
         let good_sha = sha256_hex(&good);
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
