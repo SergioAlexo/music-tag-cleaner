@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { confirm, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   AlertTriangle,
+  ArrowLeftRight,
   ArrowDown,
   ArrowUp,
   ChevronDown,
@@ -25,7 +26,8 @@ import {
   Upload,
 } from "lucide-react";
 import type { Notify } from "../hooks/useFiles";
-import type { KeyNotation } from "../types";
+import type { KeyNotation, Settings } from "../types";
+import { DjSyncDialog } from "../components/DjSyncDialog";
 import { Button, Card, Badge, cn, inputClass } from "../components/ui";
 import { VirtualList } from "../components/VirtualList";
 import {
@@ -71,6 +73,8 @@ interface DjStatus {
 interface Props {
   notify: Notify;
   keyNotation: KeyNotation;
+  settings: Settings;
+  savePatch: (p: Partial<Settings>) => void;
   /** Opens `paths` (library paths) in a new Library session tab and switches to it. */
   onLoadSession: (paths: string[], title: string) => void;
 }
@@ -115,7 +119,8 @@ type Dialog =
   | { kind: "facets" }
   | { kind: "add" };
 
-export function PlaylistsPage({ notify, keyNotation, onLoadSession }: Props) {
+export function PlaylistsPage({ notify, keyNotation, settings, savePatch, onLoadSession }: Props) {
+  const [syncOpen, setSyncOpen] = useState(false);
   const [source, setSource] = useState<DjSource>(() => (lsGet("playlists.source") as DjSource) || "mtc");
   const [snaps, setSnaps] = useState<Partial<Record<DjSource, DjSnapshot>>>({});
   const [loading, setLoading] = useState<DjSource | null>(null);
@@ -669,6 +674,9 @@ export function PlaylistsPage({ notify, keyNotation, onLoadSession }: Props) {
         <Button variant="outline" size="sm" onClick={() => void load(source)} disabled={loading === source}>
           {loading === source ? <Loader2 className="animate-spin" /> : <RefreshCw />} Reload
         </Button>
+        <Button variant="outline" size="sm" onClick={() => setSyncOpen(true)} title="Keep playlists and track data in step between Rekordbox and Mixxx">
+          <ArrowLeftRight /> Sync Rekordbox ⇄ Mixxx…
+        </Button>
         <Button variant="outline" size="sm" onClick={() => setDialog({ kind: "facets" })} disabled={!mtc && loading === "mtc"} onMouseEnter={() => void (mtc ?? load("mtc"))}>
           <Sparkles /> Smart playlists from genres…
         </Button>
@@ -957,6 +965,7 @@ export function PlaylistsPage({ notify, keyNotation, onLoadSession }: Props) {
         </Card>
       </div>
 
+      {syncOpen && <DjSyncDialog settings={settings} savePatch={savePatch} notify={notify} onClose={() => { setSyncOpen(false); void refreshStatus(); }} />}
       {dialog?.kind === "name" && (
         <NameDialog title={dialog.title} label={dialog.label} initial={dialog.initial} confirmLabel={dialog.confirmLabel} onSubmit={dialog.onSubmit} onCancel={() => setDialog(null)} />
       )}

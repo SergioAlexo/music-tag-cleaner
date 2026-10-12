@@ -2515,6 +2515,8 @@ This rewrites the ${meta.singular} tag on ${
             <PlaylistsPage
               notify={notify}
               keyNotation={settings.keyNotation}
+              settings={settings}
+              savePatch={savePatch}
               onLoadSession={(paths) => void loadPlaylistSession(paths)}
             />
           ) : page === "ytmusic" ? (
