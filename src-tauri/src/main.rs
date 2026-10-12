@@ -94,6 +94,12 @@ fn set_window_app_user_model_id(win: &tauri::WebviewWindow) {
 }
 
 fn main() {
+    // reqwest is built with `rustls-no-provider`, so every HTTPS client panics
+    // ("No rustls crypto provider is configured") unless one is installed
+    // process-wide first. Do it before anything can build a client: artwork,
+    // lyrics, the plugin store and the AI backends all make requests at startup.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     #[cfg(windows)]
     set_process_app_user_model_id();
 
