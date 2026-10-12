@@ -301,6 +301,12 @@ export interface Settings {
   libraryAutoRefresh: boolean;
   /** D1: run the local AI-control bridge (127.0.0.1 only, bearer token). Off by default. */
   aiControl: boolean;
+  /** D2: id of the chosen theme plugin; "" = follow the OS (the default). */
+  themeId: string;
+  /** D2: per-plugin state: enabled, the content hash the person approved, and its settings values. */
+  plugins: Record<string, { enabled: boolean; approvedHash: string; values?: Record<string, unknown> }>;
+  /** D2: URL of the plugin store's index.json. Empty = store not configured. */
+  pluginStoreUrl: string;
   /** Where fetched lyrics go: a sidecar .lrc/.txt next to the audio, the file's own lyrics tag, or both. */
   lyricsStorage: LyricsStorage;
   /** Also append `#lang-xx` to Comment when language suggestions are applied (Rekordbox cannot show TLAN). */

@@ -73,4 +73,19 @@ describe("migrate", () => {
     expect(next.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
     expect(next.aiControl).toBe(false);
   });
+  it("v23 (D2) adds plugin state with OS-follow theme as the default and keeps existing values", () => {
+    const old: any = { ...DEFAULT_SETTINGS, theme: "system" };
+    delete old.themeId;
+    delete old.plugins;
+    delete old.pluginStoreUrl;
+    const next = migrate(old, 21);
+    expect(next.themeId).toBe("");
+    expect(next.plugins).toEqual({});
+    expect(next.pluginStoreUrl).toBe("");
+    expect(next.theme).toBe("system");
+    expect(next.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
+    const kept = migrate({ ...old, themeId: "midnight", plugins: { a: { enabled: true, approvedHash: "x" } } }, 21);
+    expect(kept.themeId).toBe("midnight");
+    expect(kept.plugins.a.enabled).toBe(true);
+  });
 });

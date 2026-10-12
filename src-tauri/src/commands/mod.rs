@@ -18,6 +18,7 @@ pub mod library_index;
 pub mod lyrics;
 pub mod mixxx_db;
 pub mod organize;
+pub mod plugins;
 pub mod rekordbox_db;
 pub mod rekordbox_import;
 pub mod sqlcipher;

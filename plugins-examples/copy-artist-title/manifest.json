@@ -1,0 +1,23 @@
+{
+  "id": "copy-artist-title",
+  "name": "Copy as Artist - Title",
+  "version": "1.0.0",
+  "author": "Music Tag Cleaner",
+  "description": "Right-click tracks, choose \"Copy as Artist - Title\", and paste a tidy track list anywhere.",
+  "apiVersion": 1,
+  "kind": "plugin",
+  "permissions": ["read"],
+  "entry": "index.js",
+  "contributes": {
+    "actions": [
+      {
+        "id": "copy",
+        "title": "Copy selected tracks as Artist - Title",
+        "params": { "type": "object", "properties": { "paths": { "type": "array", "items": { "type": "string" } } } }
+      }
+    ],
+    "contextMenu": [
+      { "id": "copy", "label": "Copy as Artist - Title", "action": "copy", "pathsParam": "paths" }
+    ]
+  }
+}

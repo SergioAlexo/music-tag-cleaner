@@ -29,6 +29,7 @@ import { useTags } from "./hooks/useTags";
 import { OrganizeDialog, toOrganizeItem } from "./components/OrganizeDialog";
 import { LibraryPage } from "./pages/LibraryPage";
 import { ALL_COLUMNS } from "./components/TrackTable";
+import { usePlugins } from "./plugins/usePlugins";
 import { useActionBridge } from "./hooks/useActionBridge";
 import { useGenreLoad } from "./hooks/useGenreLoad";
 import { describeRefresh, refreshChangedAnything } from "./lib/libraryRefresh";
@@ -90,6 +91,9 @@ const SettingsPage = lazy(() =>
   import("./pages/SettingsPage").then((m) => ({ default: m.SettingsPage })),
 );
 const LogsPage = lazy(() => import("./pages/LogsPage").then((m) => ({ default: m.LogsPage })));
+const PluginsPage = lazy(() =>
+  import("./pages/PluginsPage").then((m) => ({ default: m.PluginsPage })),
+);
 const ManualAIDialog = lazy(() =>
   import("./components/ManualAIDialog").then((m) => ({ default: m.ManualAIDialog })),
 );
@@ -2252,6 +2256,18 @@ This rewrites the ${meta.singular} tag on ${
     if (tags) setInspected({ file, tags });
   };
 
+  // D2: plugins (sandboxed buttons/columns/actions) and themes. Registers plugins.* actions.
+  const pluginManager = usePlugins({
+    settings,
+    loaded,
+    savePatch,
+    notify,
+    files: filesApi.files,
+    tags: libraryTags,
+    selectedPaths: filesApi.selectedPaths,
+    showPlugins: () => setPage("plugins"),
+  });
+
   // D1: expose the handlers above to the action registry / AI bridge (additive:
   // the toolbar keeps calling them directly). See src/lib/appActions.ts.
   useActionBridge(
@@ -2545,6 +2561,8 @@ This rewrites the ${meta.singular} tag on ${
               onOllamaChanged={() => void ai.check(settingsRef.current.ollamaUrl)}
               onFfmpegChanged={refreshFfmpeg}
             />
+          ) : page === "plugins" ? (
+            <PluginsPage manager={pluginManager} settings={settings} notify={notify} onUpdate={update} />
           ) : page === "logs" ? (
             <LogsPage
               logs={logs}

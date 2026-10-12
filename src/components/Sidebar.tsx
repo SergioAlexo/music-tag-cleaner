@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { Copy, Disc3, ListChecks, ListMusic, Music, Package, Settings, Terminal } from "lucide-react";
+import { Copy, Disc3, ListChecks, ListMusic, Music, Package, Puzzle, Settings, Terminal } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { cn } from "./ui";
 import logoBlack from "../assets/logo-sergioalexo-black.svg";
 import logoWhite from "../assets/logo-sergioalexo-white.svg";
 
-export type Page = "library" | "duplicates" | "playlists" | "ytmusic" | "components" | "settings" | "logs";
+export type Page = "library" | "duplicates" | "playlists" | "ytmusic" | "components" | "plugins" | "settings" | "logs";
 
 const NAV: { page: Page; label: string; icon: typeof Music }[] = [
   { page: "library", label: "Library", icon: Disc3 },
@@ -14,6 +14,7 @@ const NAV: { page: Page; label: string; icon: typeof Music }[] = [
   { page: "playlists", label: "Playlists", icon: ListChecks },
   { page: "ytmusic", label: "YT Music Import", icon: ListMusic },
   { page: "components", label: "Components", icon: Package },
+  { page: "plugins", label: "Plugins", icon: Puzzle },
   { page: "logs", label: "Logs", icon: Terminal },
   { page: "settings", label: "Settings", icon: Settings },
 ];
