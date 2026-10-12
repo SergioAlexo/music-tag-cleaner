@@ -23,11 +23,12 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
-use aes::cipher::{block_padding::NoPadding, BlockDecryptMut, KeyIvInit};
+use aes::cipher::{block_padding::NoPadding, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use hmac::{Hmac, Mac};
 use sha2::Sha512;
 
 type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
 
 pub const PAGE_SIZE: usize = 4096;
 const SALT_LEN: usize = 16;
@@ -131,42 +132,90 @@ pub fn decrypt_database(src: &Path, dst: &Path, passphrase: &str) -> Result<u32,
     Ok(pages)
 }
 
+/// A fresh random 16-byte SQLCipher salt (only for databases that have none;
+/// re-encrypting an existing file should reuse its original salt).
+#[allow(dead_code)] // library only for now: no write path exists (see plans/v0.19/notes/F2a.md)
+pub fn random_salt() -> [u8; SALT_LEN] {
+    let mut s = [0u8; SALT_LEN];
+    getrandom::fill(&mut s).expect("OS random source unavailable");
+    s
+}
+
+/// Encrypts one plain page (`PAGE_SIZE` bytes, reserve area ignored) into
+/// `out`, with a fresh random IV. Page 1 gets `salt` in place of the 16-byte
+/// SQLite header. Mirrors `decrypt_page`: HMAC over encrypted bytes + IV + LE
+/// page number, starting after the salt on page 1.
+fn encrypt_page(keys: &Keys, plain: &[u8], pgno: u32, salt: &[u8; SALT_LEN], out: &mut [u8]) -> Result<(), String> {
+    let start = if pgno == 1 { SALT_LEN } else { 0 };
+    let enc_end = PAGE_SIZE - RESERVE;
+    let mut iv = [0u8; IV_LEN];
+    getrandom::fill(&mut iv).map_err(|e| format!("No random source for the page IV: {e}"))?;
+    let mut body = plain[start..enc_end].to_vec();
+    let n = body.len();
+    Aes256CbcEnc::new_from_slices(&keys.enc, &iv)
+        .map_err(|e| e.to_string())?
+        .encrypt_padded_mut::<NoPadding>(&mut body, n)
+        .map_err(|e| e.to_string())?;
+    out.fill(0);
+    if pgno == 1 {
+        out[..SALT_LEN].copy_from_slice(salt);
+    }
+    out[start..enc_end].copy_from_slice(&body);
+    out[enc_end..enc_end + IV_LEN].copy_from_slice(&iv);
+    let mac = page_hmac(keys, &out[start..enc_end + IV_LEN], pgno);
+    out[enc_end + IV_LEN..].copy_from_slice(&mac);
+    Ok(())
+}
+
+/// Encrypts a plain SQLite file (as produced by `decrypt_database`: page size
+/// 4096 and an 80-byte reserve per page) into a SQLCipher 4 file at `dst`.
+/// `plain` is only read. Returns the number of pages written.
+///
+/// Refuses input whose reserve area isn't 80 zero bytes per page: SQLCipher
+/// overwrites that area with IV + HMAC, so anything else would silently lose
+/// data. Header bytes 18/19 are copied as given (decrypt resets them to 1; a
+/// WAL database would need 2 restored by the caller).
+#[allow(dead_code)]
+pub fn encrypt_database(plain: &Path, dst: &Path, passphrase: &str, salt: [u8; SALT_LEN]) -> Result<u32, String> {
+    let f = File::open(plain).map_err(|e| format!("Couldn't open {}: {e}", plain.display()))?;
+    let len = f.metadata().map_err(|e| e.to_string())?.len() as usize;
+    if len < PAGE_SIZE || len % PAGE_SIZE != 0 {
+        return Err("Not a 4096-byte-page SQLite database".into());
+    }
+    let mut r = BufReader::with_capacity(1 << 20, f);
+    let mut page = vec![0u8; PAGE_SIZE];
+    r.read_exact(&mut page).map_err(|e| e.to_string())?;
+    if &page[..16] != SQLITE_MAGIC {
+        return Err("Input isn't a plain SQLite database".into());
+    }
+    if u16::from_be_bytes([page[16], page[17]]) as usize != PAGE_SIZE {
+        return Err("Input page size isn't 4096".into());
+    }
+    if page[20] as usize != RESERVE {
+        return Err(format!("Input reserves {} bytes per page, expected {RESERVE}", page[20]));
+    }
+    let keys = derive_keys(passphrase.as_bytes(), &salt);
+    let out_file = File::create(dst).map_err(|e| format!("Couldn't create {}: {e}", dst.display()))?;
+    let mut w = BufWriter::with_capacity(1 << 20, out_file);
+    let mut out = vec![0u8; PAGE_SIZE];
+    let pages = (len / PAGE_SIZE) as u32;
+    for pgno in 1..=pages {
+        if pgno > 1 {
+            r.read_exact(&mut page).map_err(|e| e.to_string())?;
+        }
+        if page[PAGE_SIZE - RESERVE..].iter().any(|&b| b != 0) {
+            return Err(format!("Page {pgno} has data in its reserved area; refusing to overwrite it"));
+        }
+        encrypt_page(&keys, &page, pgno, &salt, &mut out)?;
+        w.write_all(&out).map_err(|e| e.to_string())?;
+    }
+    w.flush().map_err(|e| e.to_string())?;
+    Ok(pages)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use aes::cipher::BlockEncryptMut;
-    type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
-
-    /// Test-only encryptor so decryption is exercised on a database we built,
-    /// independent of the owner's files.
-    pub fn encrypt_database(plain: &[u8], passphrase: &str, salt: [u8; 16]) -> Vec<u8> {
-        let keys = derive_keys(passphrase.as_bytes(), &salt);
-        let mut out = Vec::new();
-        for (i, chunk) in plain.chunks(PAGE_SIZE).enumerate() {
-            let pgno = i as u32 + 1;
-            let start = if pgno == 1 { SALT_LEN } else { 0 };
-            let enc_end = PAGE_SIZE - RESERVE;
-            let mut p = chunk.to_vec();
-            p.resize(PAGE_SIZE, 0);
-            let iv: Vec<u8> = (0..IV_LEN).map(|k| (pgno as usize * 7 + k) as u8).collect();
-            let mut body = p[start..enc_end].to_vec();
-            let n = body.len();
-            Aes256CbcEnc::new_from_slices(&keys.enc, &iv)
-                .unwrap()
-                .encrypt_padded_mut::<NoPadding>(&mut body, n)
-                .unwrap();
-            let mut page = vec![0u8; PAGE_SIZE];
-            if pgno == 1 {
-                page[..SALT_LEN].copy_from_slice(&salt);
-            }
-            page[start..enc_end].copy_from_slice(&body);
-            page[enc_end..enc_end + IV_LEN].copy_from_slice(&iv);
-            let mac = page_hmac(&keys, &page[start..enc_end + IV_LEN], pgno);
-            page[enc_end + IV_LEN..].copy_from_slice(&mac);
-            out.extend_from_slice(&page);
-        }
-        out
-    }
 
     fn scratch(name: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("mtc-sqlcipher-{}-{name}", std::process::id()));
@@ -174,47 +223,188 @@ pub(crate) mod tests {
         d
     }
 
+    /// Plain SQLite with an 80-byte reserve per page (what SQLCipher files
+    /// look like once decrypted), built with SQLite's own reserve-bytes file
+    /// control + VACUUM, so the result opens with the same rows.
+    fn make_plain(path: &Path, rows: i64) {
+        let c = rusqlite::Connection::open(path).unwrap();
+        c.pragma_update(None, "page_size", 4096).unwrap();
+        c.execute_batch("CREATE TABLE t(a INTEGER, b TEXT);").unwrap();
+        let mut n: std::os::raw::c_int = RESERVE as std::os::raw::c_int;
+        // SQLITE_FCNTL_RESERVE_BYTES = 38
+        let rc = unsafe {
+            rusqlite::ffi::sqlite3_file_control(
+                c.handle(),
+                b"main\0".as_ptr() as *const _,
+                38,
+                &mut n as *mut _ as *mut _,
+            )
+        };
+        assert_eq!(rc, 0);
+        c.execute_batch("VACUUM;").unwrap();
+        c.execute_batch(&format!(
+            "BEGIN; WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<{rows})
+             INSERT INTO t SELECT i, 'row ' || i || ' ' || hex(randomblob(40)) FROM n; COMMIT;"
+        ))
+        .unwrap();
+        let _ = c.close();
+        let b = std::fs::read(path).unwrap();
+        assert_eq!(b[20] as usize, RESERVE, "reserve not applied");
+    }
+
+    fn page_ivs(enc: &[u8]) -> Vec<Vec<u8>> {
+        let e = PAGE_SIZE - RESERVE;
+        enc.chunks(PAGE_SIZE).map(|p| p[e..e + IV_LEN].to_vec()).collect()
+    }
+
     #[test]
-    fn round_trips_a_real_sqlite_file_and_rejects_a_wrong_key() {
+    fn encrypt_then_decrypt_is_byte_identical() {
         let dir = scratch("rt");
         let plain = dir.join("plain.db");
-        {
-            let c = rusqlite::Connection::open(&plain).unwrap();
-            c.pragma_update(None, "page_size", 4096).unwrap();
-            c.execute_batch(
-                "CREATE TABLE t(a INTEGER, b TEXT); BEGIN;
-                 WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<2000)
-                 INSERT INTO t SELECT i, 'row ' || i || ' ' || hex(randomblob(40)) FROM n; COMMIT;",
-            )
-            .unwrap();
-        }
+        make_plain(&plain, 2000);
         let bytes = std::fs::read(&plain).unwrap();
-        let enc = encrypt_database(&bytes, "secret", [9u8; 16]);
         let encp = dir.join("enc.db");
-        std::fs::write(&encp, &enc).unwrap();
+        let pages = encrypt_database(&plain, &encp, "secret", [9u8; 16]).unwrap();
+        assert_eq!(pages as usize, bytes.len() / PAGE_SIZE);
+        let enc = std::fs::read(&encp).unwrap();
+        assert_eq!(enc.len(), bytes.len());
+        assert_eq!(&enc[..16], &[9u8; 16], "page 1 starts with the salt");
 
         let outp = dir.join("out.db");
-        let pages = decrypt_database(&encp, &outp, "secret").unwrap();
-        assert_eq!(pages as usize, bytes.len() / PAGE_SIZE);
-        // The synthetic plain file uses the whole page (reserve 0), so only the
-        // region SQLCipher actually encrypts is comparable; opening the result
-        // with SQLite is covered by the real master.db test in rekordbox_db.
+        decrypt_database(&encp, &outp, "secret").unwrap();
         let got = std::fs::read(&outp).unwrap();
-        assert_eq!(got.len(), bytes.len());
-        for (i, (g, p)) in got.chunks(PAGE_SIZE).zip(bytes.chunks(PAGE_SIZE)).enumerate() {
-            let hi = PAGE_SIZE - RESERVE;
-            let lo = if i == 0 { 20 } else { 0 };
-            assert_eq!(&g[lo..hi], &p[lo..hi], "page {}", i + 1);
-        }
-        assert_eq!(&got[..16], SQLITE_MAGIC);
+        // Decrypt resets the WAL flag bytes; the plain file is rollback-journal
+        // mode so they're already 1.
+        assert_eq!(got, bytes);
+        let c = rusqlite::Connection::open(&outp).unwrap();
+        let n: i64 = c.query_row("SELECT count(*) FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2000);
+        let ic: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+        assert_eq!(ic, "ok");
+        drop(c);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
+    #[test]
+    fn ivs_are_random_per_encryption_and_per_page() {
+        let dir = scratch("iv");
+        let plain = dir.join("plain.db");
+        make_plain(&plain, 500);
+        let bytes = std::fs::read(&plain).unwrap();
+        let (a, b) = (dir.join("a.db"), dir.join("b.db"));
+        encrypt_database(&plain, &a, "secret", [3u8; 16]).unwrap();
+        encrypt_database(&plain, &b, "secret", [3u8; 16]).unwrap();
+        let (ea, eb) = (std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());
+        assert_ne!(ea, eb);
+        let (ia, ib) = (page_ivs(&ea), page_ivs(&eb));
+        assert!(ia.iter().zip(&ib).all(|(x, y)| x != y), "every page IV differs between runs");
+        let uniq: std::collections::HashSet<_> = ia.iter().collect();
+        assert_eq!(uniq.len(), ia.len(), "IVs unique within a file");
+        for (e, name) in [(&a, "da.db"), (&b, "db.db")] {
+            let o = dir.join(name);
+            decrypt_database(e, &o, "secret").unwrap();
+            assert_eq!(std::fs::read(&o).unwrap(), bytes);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wrong_key_and_flipped_bytes_fail_the_hmac() {
+        let dir = scratch("neg");
+        let plain = dir.join("plain.db");
+        make_plain(&plain, 1500);
+        let encp = dir.join("enc.db");
+        encrypt_database(&plain, &encp, "secret", [5u8; 16]).unwrap();
         let err = decrypt_database(&encp, &dir.join("bad.db"), "wrong").unwrap_err();
         assert!(err.contains("integrity"), "{err}");
-        // A flipped byte in a later page is caught too.
-        let mut torn = enc.clone();
-        torn[PAGE_SIZE * 2 + 100] ^= 1;
-        std::fs::write(dir.join("torn.db"), &torn).unwrap();
-        assert!(decrypt_database(&dir.join("torn.db"), &dir.join("t2.db"), "secret").is_err());
+        let enc = std::fs::read(&encp).unwrap();
+        // Flip one byte in: page-1 body, a later page body, an IV, an HMAC.
+        for off in [100usize, PAGE_SIZE * 2 + 100, PAGE_SIZE * 2 + (PAGE_SIZE - RESERVE) + 3, PAGE_SIZE * 3 - 1] {
+            let mut torn = enc.clone();
+            torn[off] ^= 1;
+            let tp = dir.join("torn.db");
+            std::fs::write(&tp, &torn).unwrap();
+            let e = decrypt_database(&tp, &dir.join("t2.db"), "secret").unwrap_err();
+            assert!(e.contains("integrity"), "offset {off}: {e}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn encrypt_refuses_inputs_it_would_corrupt() {
+        let dir = scratch("refuse");
+        // A stock SQLite file has no reserve, so its last 80 bytes are data.
+        let p = dir.join("stock.db");
+        {
+            let c = rusqlite::Connection::open(&p).unwrap();
+            c.pragma_update(None, "page_size", 4096).unwrap();
+            c.execute_batch("CREATE TABLE t(a); INSERT INTO t VALUES (1);").unwrap();
+        }
+        assert!(encrypt_database(&p, &dir.join("o.db"), "x", [0; 16]).is_err());
+        // Non-zero data inside the reserve of a later page.
+        let q = dir.join("dirty.db");
+        make_plain(&q, 500);
+        let mut b = std::fs::read(&q).unwrap();
+        b[PAGE_SIZE * 2 - 1] = 7;
+        std::fs::write(&q, &b).unwrap();
+        let e = encrypt_database(&q, &dir.join("o2.db"), "x", [0; 16]).unwrap_err();
+        assert!(e.contains("reserved"), "{e}");
+        // Already-encrypted input isn't plain.
+        let r = dir.join("r.db");
+        make_plain(&r, 10);
+        encrypt_database(&r, &dir.join("e.db"), "x", [1; 16]).unwrap();
+        assert!(encrypt_database(&dir.join("e.db"), &dir.join("o3.db"), "x", [0; 16]).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round trip on a COPY of the owner's real master.db: decrypt -> encrypt
+    /// with the original salt -> decrypt must give identical plain bytes.
+    /// Read-only on the live file (std::fs::copy); writes only to a temp dir.
+    /// Skips silently where Rekordbox isn't installed (CI).
+    #[test]
+    fn real_master_db_copy_round_trips() {
+        let Some(live) = super::super::rekordbox_db::default_db_path() else {
+            eprintln!("no Rekordbox master.db here; skipping");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("mtc-f2a-real-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let copy = dir.join("master.db");
+        std::fs::copy(&live, &copy).unwrap();
+        for sfx in ["-wal", "-shm"] {
+            let mut side = live.clone().into_os_string();
+            side.push(sfx);
+            let side = std::path::PathBuf::from(side);
+            if side.is_file() {
+                let mut dst = copy.clone().into_os_string();
+                dst.push(sfx);
+                std::fs::copy(&side, std::path::PathBuf::from(dst)).unwrap();
+            }
+        }
+        let mut salt = [0u8; SALT_LEN];
+        salt.copy_from_slice(&std::fs::read(&copy).unwrap()[..SALT_LEN]);
+
+        let plain1 = dir.join("plain1.db");
+        let pages = decrypt_database(&copy, &plain1, REKORDBOX_PASSPHRASE).unwrap();
+        let enc2 = dir.join("re-encrypted.db");
+        assert_eq!(encrypt_database(&plain1, &enc2, REKORDBOX_PASSPHRASE, salt).unwrap(), pages);
+        let plain2 = dir.join("plain2.db");
+        decrypt_database(&enc2, &plain2, REKORDBOX_PASSPHRASE).unwrap();
+        let (a, b) = (std::fs::read(&plain1).unwrap(), std::fs::read(&plain2).unwrap());
+        assert!(a == b, "re-decrypted plain bytes differ");
+        assert_ne!(std::fs::read(&copy).unwrap(), std::fs::read(&enc2).unwrap(), "fresh IVs");
+
+        let tracks = |p: &Path| -> (i64, String) {
+            let c = rusqlite::Connection::open_with_flags(p, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+            let n = c.query_row("SELECT count(*) FROM djmdContent", [], |r| r.get(0)).unwrap();
+            let ic = c.query_row("PRAGMA integrity_check", [], |r| r.get(0)).unwrap();
+            (n, ic)
+        };
+        let (n1, _) = tracks(&plain1);
+        let (n2, ic2) = tracks(&plain2);
+        eprintln!("real master.db copy: {pages} pages, {n1} tracks -> {n2} after re-encrypt, integrity_check {ic2}");
+        assert_eq!(n1, n2);
+        assert_eq!(ic2, "ok");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
