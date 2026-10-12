@@ -2507,6 +2507,40 @@ click-through list is in `plans/v0.19/notes/<id>.md` (committed). Summary:
 Settings v16 → v24. Tests at release: 349 TS, 230 Rust, 9 mcp. Smoke-run in
 `tauri dev` by the owner; per-feature click-throughs in the notes files.
 
+### 65. v0.19 follow-ups: bundled MCP server, lyrics output window, SQLCipher encrypt — v0.19.1
+
+**Released as v0.19.1.** Three follow-ups from item 64's backlog, built by
+parallel agents; details + click-throughs in `plans/v0.19/notes/F1.md`,
+`F2a.md`, `F3.md`.
+
+- **F1 `mtc-mcp` ships with the app.** `scripts/build-sidecar.mjs` builds the
+  `mcp/` crate for the target triple and copies it to
+  `src-tauri/binaries/mtc-mcp-<triple>`; it runs from `beforeBuildCommand`
+  (release) and `beforeDevCommand` (debug), so `release.yml` needed no new
+  step (only `mcp -> target` in rust-cache). `bundle.externalBin` +
+  a `build.rs` placeholder so a bare `cargo test` / `ci.yml` still builds on a
+  fresh clone (tauri-build fails on a missing externalBin); the script
+  overwrites the placeholder before any real bundle. Settings → AI control now
+  points at the bundled binary. Verified with a local `tauri build`: MSI and
+  NSIS both include `mtc-mcp.exe`.
+- **F3 Lyrics for live visuals.** Click a synced line to seek the prelisten
+  player (seek channel in `nowPlaying.ts`, single-player contract kept).
+  **Lyrics output window** (`lyrics_output.rs`, label `lyrics-out`, capability
+  `lyrics-output.json` = events only): big current/next line, Clean /
+  Karaoke-fill / Neon / Lower-third styles, black / transparent / chroma-green
+  background, font size + sync offset, fullscreen + move-to-monitor, and a
+  manual stepping mode for playing from Rekordbox. Main window broadcasts over
+  events; the output window keeps its own clock. Settings v26. Mixxx-follow
+  mode designed in the notes, not built.
+- **F2a SQLCipher 4 encrypt (library + tests only).** `encrypt_database` in
+  `sqlcipher.rs` mirrors the decrypt (fresh per-page IVs, HMAC-SHA512,
+  page-1 salt). Real-copy round trip: 12259 pages, plaintext byte-identical,
+  4405 tracks, integrity ok. **No write path** — nothing calls it and nothing
+  writes under `%APPDATA%\Pioneer`; direct `master.db` writes need a
+  separately approved step (see `F2a.md` "Write path — NOT built").
+
+Tests at release: 369 TS, 236 Rust, 9 mcp.
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —
@@ -2726,9 +2760,10 @@ must never lock someone out of editing their own files.
   densely across a wide range" from "a handful of scattered short matches
   spread over a wide range" — simple span or simple sum both fail one real
   case or the other.
-- v0.19 follow-ups: bundle `mtc-mcp` as a sidecar in `release.yml`; direct
-  Rekordbox `master.db` writes (re-encrypt, USN, `masterPlaylists6.xml`); verify
-  Rekordbox XML import updates metadata of existing tracks; observe numeric
-  Rekordbox smart-rule encodings (BPM/rating/key/date); lyrics click-to-seek and
-  the fullscreen "lyrics output" window (sketch in `plans/v0.19/notes/B3.md`).
+- v0.19 follow-ups (bundled MCP + lyrics seek/output window + SQLCipher
+  encrypt done in v0.19.1): still open — direct Rekordbox `master.db` writes
+  (needs separate approval, see `plans/v0.19/notes/F2a.md`); verify Rekordbox
+  XML import updates existing tracks' metadata; observe numeric Rekordbox
+  smart-rule encodings (BPM/rating/key/date); Mixxx-follow mode for the lyrics
+  output window (design in `F3.md`).
 - (add items here)
