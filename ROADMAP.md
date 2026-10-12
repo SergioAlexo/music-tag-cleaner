@@ -2425,6 +2425,88 @@ carried GEOB/PRIV/POPM frames, so those paths are covered by synthetic tests.
 New regression tests cover each data bug on real MP3/FLAC files. Not
 click-tested in `npm run tauri dev` yet.
 
+### 64. Library, artwork, lyrics, DJ playlists + sync, AI control, plugins — v0.19.0
+
+**Released as v0.19.0.** A 12-part batch built by parallel agents from the
+briefs in `plans/v0.19/` (uncommitted); each part's what/why/how-verified and
+click-through list is in `plans/v0.19/notes/<id>.md` (committed). Summary:
+
+- **A1 Duplicates page.** Fixed-width time slot so the waveform never shrinks
+  on play; cover thumbnails (lazy, `read_cover_thumbnail`); **Skip removed**
+  — rows are Keep / Remove / undecided, nothing pre-marked after a scan;
+  empty waveform is a flat, still-seekable bar with a regenerate button;
+  one-click Track ID chip; right-click menu incl. **Show in Library**
+  (`src/lib/focusPath.ts` → table selects + scrolls).
+- **A2 Waveforms + duplicate recall.** All 4289 Collection MP3s decode fine;
+  missing waveforms came from the cache write failing (`?`) while a scan held
+  the sqlite lock, and unbounded parallel decodes. Cache I/O is best-effort,
+  max 4 decodes at once, partial decodes kept, FFmpeg fallback, and a readable
+  error instead of an empty `Ok`. Duplicates gained a **tag stage**
+  (normalized artist+title, filename fallback, DJ-pool/version tags
+  stripped) and real header lengths, so radio vs extended is found as
+  `alternate`: 0 → 226 groups on the owner's Collection, scan 274s → 140s.
+  `DuplicateGroup.reason` = audio | tags | tags+audio.
+- **A3 Tag audit + Rekordbox fields.** Cross-format round-trip matrix
+  (MP3 v2.3/v2.4, FLAC, M4A, OGG, AIFF, WAV). Fixed: Original Artist lost on
+  FLAC/OGG/M4A, Track ID lost on M4A, session rows losing Rekordbox BPM/key.
+  BPM + Key columns (tag first, Rekordbox fallback, "RB" marker), key notation
+  setting (`src/lib/keys.ts`), Rekordbox XML `Rating` → stars, and a
+  **Rekordbox → tags** bulk write (previewed, undoable).
+- **B1 Library sidebar.** Genres/Albums/Languages share one facet system
+  (`src/lib/facets.ts`); "No genre/album" rows; album rename retags the index;
+  library **Search** tab with Add / Add N (no drag); **Refresh** button +
+  optional refresh-on-focus. Index stores the file's own BPM/key
+  (`INDEX_VERSION` 4) and search understands `bpm:` / `key:`.
+- **B2 Artwork.** MusicBrainz → Cover Art Archive → iTunes → Deezer lookup
+  (1 req/s to MB, 30-day sqlite cache), candidate picker + bulk auto-pick
+  with a confidence threshold. **Junk Art**: dHash of every embedded cover,
+  clusters spread across many artists = DJ-pool logos (61 clusters, biggest
+  82 tracks/74 artists on the owner's library); blocklist in `artwork.sqlite`.
+- **B3 Lyrics + Language.** LRCLIB lookup (get → search, duration-checked,
+  retries, cached); sidecar `.lrc` by default, embedded optional; Lyrics
+  panel follows prelisten. 63/100 hit rate on a library sample. `language`
+  field ↔ TLAN/LANGUAGE (ISO 639-2), offline `whatlang` detection as
+  previewed suggestions, optional `#lang-xx` in Comment, `lang:` search.
+  `INDEX_VERSION` 5.
+- **B4 Organize + library file.** "Move to collection…" with a pattern,
+  preview, never-overwrite, cross-volume copy+verify, undo, old→new path CSV
+  in `move-maps/`. Library db location is choosable (`VACUUM INTO` +
+  integrity check); snapshots (`.sqlite` + `library.json`), keep-N,
+  snapshot-on-exit, restore.
+- **C0 → C1 DJ playlists.** Rekordbox 7 `master.db` is read via a
+  **pure-Rust SQLCipher 4 decrypt** of a temp copy (`sqlcipher.rs`; the
+  rusqlite sqlcipher feature needs Perl/OpenSSL and would replace `bundled`).
+  Playlists page with Rekordbox / Mixxx / MTC tabs, copy/duplicate/rename/
+  delete, smart-rule model + editor (`src/lib/smartRules.ts`), genre/album/
+  language → smart playlists (idempotent). Mixxx written directly (app closed,
+  backup, one transaction, `foreign_keys` off — Mixxx's FKs point at a stale
+  `library_old`); Rekordbox only via generated rekordbox.xml.
+- **C2 Rekordbox ⇄ Mixxx sync.** Snapshot diff per side (`djSync.ts`,
+  state in `dj_sync_state`), preview → apply, conflicts surfaced, first sync
+  never deletes, B4 move-maps applied. Metadata: BPM (never over a Mixxx
+  beatgrid), key (incl. Mixxx `KeyMap` blob), rating, play count, comment,
+  colour. Dry run on db copies: 217 lists + 3530 track updates to Mixxx, 221
+  updates to the Rekordbox XML, second run a no-op.
+- **D1 AI control.** Action registry (`src/lib/actions.ts`, ~60 actions
+  wrapping existing handlers, JSON-Schema params, `script.run` batches with
+  dry-run); localhost-only `tiny_http` bridge with a random bearer token in
+  `bridge.json`, off by default, dangerous actions confirm in-app, every call
+  logged; separate `mcp/` crate (`rmcp`, stdio) that builds MCP tools from
+  the registry at runtime.
+- **D2 Plugins + themes.** Plugin SDK (`plugins/sdk.d.ts`), code runs in a
+  Worker inside a sandboxed iframe (CSP `default-src 'none'`), deny-by-default
+  permissions, nothing runs until its exact bytes are approved; toolbar
+  buttons, context items, columns. 5 bundled themes over the shadcn tokens
+  ("Follow OS" stays default). AI "New button" (generic text-gen command on
+  Ollama/Claude CLI/manual) → same review prompt. Store tab: `index.json`,
+  sha256-verified zip, staged until approved. Guide: `PLUGINS.md`.
+- **Startup fix.** reqwest uses `rustls-no-provider`; `main()` now installs
+  the ring provider (tests had each installed it themselves, so every HTTPS
+  call panicked only in the real app).
+
+Settings v16 → v24. Tests at release: 349 TS, 230 Rust, 9 mcp. Smoke-run in
+`tauri dev` by the owner; per-feature click-throughs in the notes files.
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —
@@ -2644,4 +2726,9 @@ must never lock someone out of editing their own files.
   densely across a wide range" from "a handful of scattered short matches
   spread over a wide range" — simple span or simple sum both fail one real
   case or the other.
+- v0.19 follow-ups: bundle `mtc-mcp` as a sidecar in `release.yml`; direct
+  Rekordbox `master.db` writes (re-encrypt, USN, `masterPlaylists6.xml`); verify
+  Rekordbox XML import updates metadata of existing tracks; observe numeric
+  Rekordbox smart-rule encodings (BPM/rating/key/date); lyrics click-to-seek and
+  the fullscreen "lyrics output" window (sketch in `plans/v0.19/notes/B3.md`).
 - (add items here)
