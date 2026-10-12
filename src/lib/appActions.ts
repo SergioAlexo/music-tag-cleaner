@@ -924,6 +924,53 @@ export function registerAppActions(reg: ActionRegistry, get: () => AppEnv): void
     },
   });
 
+  // ---- Rekordbox <-> Mixxx sync (C2) -----------------------------------------
+  // `preview` only reads both libraries; `apply` writes Mixxx (closed, backed up,
+  // one transaction) and optionally a rekordbox.xml. Conflicts are never resolved
+  // here: they are left alone and counted.
+
+  const syncPlan = async () => {
+    const { normalizeSettings, planFromRaw, readRaw } = await import("./djSyncRun");
+    return planFromRaw(await readRaw(), normalizeSettings(env().settings.djSync));
+  };
+
+  reg.register({
+    id: "djsync.preview",
+    title: "Preview a Rekordbox <-> Mixxx sync",
+    description:
+      "Counts of what a sync would change per item (playlists, BPM, key, rating, play count, comment, colour) and in which direction, plus conflicts. Uses the directions chosen in the sync dialog. Writes nothing.",
+    params: NO_PARAMS,
+    readOnly: true,
+    run: async () => {
+      const { summarize } = await import("./djSync");
+      const { plan } = await syncPlan();
+      return {
+        firstSync: plan.firstSync,
+        perItem: summarize(plan),
+        conflicts: plan.conflicts.length,
+        ignored: plan.ignored,
+        samples: plan.lists.slice(0, 20).map((l) => ({ action: l.action, target: l.target, name: l.name })),
+      };
+    },
+  });
+
+  reg.register({
+    id: "djsync.apply",
+    title: "Apply a Rekordbox <-> Mixxx sync",
+    description:
+      "Applies everything djsync.preview lists except conflicts. Mixxx must be closed. Changes bound for Rekordbox are written to xmlPath (a rekordbox.xml the owner imports); omit xmlPath to leave them pending.",
+    params: obj({ xmlPath: str("Where to save the rekordbox.xml for Rekordbox-bound changes") }, []),
+    dangerous: true,
+    run: async (p: { xmlPath?: string }) => {
+      const { applyPlan, describeReport } = await import("./djSyncRun");
+      const { noSelection } = await import("./djSync");
+      const loaded = await syncPlan();
+      const r = await applyPlan(loaded, noSelection(), p.xmlPath ?? null);
+      env().notify(`DJ sync: ${describeReport(r)}`, "success", { silent: true });
+      return { ...r, conflictsLeft: loaded.plan.conflicts.length };
+    },
+  });
+
   // ---- scripting -----------------------------------------------------------
 
   reg.register({
