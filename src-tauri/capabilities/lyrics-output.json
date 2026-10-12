@@ -1,0 +1,6 @@
+{
+  "identifier": "lyrics-output",
+  "description": "Lyrics output window: only listens to events from the main window (window control goes through app commands)",
+  "windows": ["lyrics-out"],
+  "permissions": ["core:event:default"]
+}

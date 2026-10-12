@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Pause, Play } from "lucide-react";
-import { publishNowPlaying, publishPaused } from "../lib/nowPlaying";
+import {
+  isNowPlayingOwner,
+  onSeekRequest,
+  publishNowPlaying,
+  publishPaused,
+  seekTargetSecs,
+  setNowPlayingOwner,
+} from "../lib/nowPlaying";
 import { cn } from "./ui";
 
 // Only one thing plays at a time across the whole table — a row's own
@@ -62,6 +69,7 @@ export function AudioPreview({
   dense?: boolean;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const ownerRef = useRef<object>({});
   const [ready, setReady] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
@@ -99,9 +107,37 @@ export function AudioPreview({
 
   // Tell the lyrics panel (and anything else following playback) where we are.
   useEffect(() => {
-    if (playing) publishNowPlaying({ path, timeMs: Math.round(time * 1000), playing: true });
-    else publishPaused(path);
+    if (playing) {
+      setNowPlayingOwner(ownerRef.current);
+      publishNowPlaying({ path, timeMs: Math.round(time * 1000), playing: true });
+    } else publishPaused(path);
   }, [playing, time, path]);
+
+  // A click on a lyric line asks the player that is (or was last) playing this
+  // file to jump there. Same steps as the scrub bar below, so the single
+  // global player contract (takeOverPlayback) holds.
+  const seekRef = useRef<(ms: number) => void>(() => {});
+  seekRef.current = (ms) => {
+    const el = audioRef.current;
+    if (!el) return;
+    ensureLoaded();
+    const value = seekTargetSecs(ms, duration);
+    el.currentTime = value;
+    setTime(value);
+    if (!playing) {
+      takeOverPlayback(pause);
+      void el.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
+    }
+  };
+  useEffect(
+    () =>
+      onSeekRequest((req) => {
+        if (req.path !== path || !isNowPlayingOwner(ownerRef.current)) return false;
+        seekRef.current(req.ms);
+        return true;
+      }),
+    [path],
+  );
 
   const pause = () => {
     audioRef.current?.pause();

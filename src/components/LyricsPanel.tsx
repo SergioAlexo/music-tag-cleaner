@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Download, Mic2, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Download, Mic2, X } from "lucide-react";
 import type { LyricsData, LyricsResult } from "../lib/lyrics";
 import { currentLineIndex, parseLrc } from "../lib/lrc";
-import { useNowPlaying } from "../lib/nowPlaying";
+import { requestSeek, useNowPlaying } from "../lib/nowPlaying";
+import type { LyricsOutputSettings } from "../lib/lyricsOutput";
+import { LyricsOutputBridge } from "./LyricsOutputBridge";
+import { LyricsOutputControls } from "./LyricsOutputControls";
 import { basename, type LyricsStorage } from "../types";
 import { cn } from "./ui";
 
@@ -20,8 +23,18 @@ import { cn } from "./ui";
 export function LyricsPanel({
   storage,
   onStored,
+  output,
+  onOutput,
+  selectedPath,
+  notify,
 }: {
   storage: LyricsStorage;
+  /** F3: lyrics output window settings + how to change them. */
+  output: LyricsOutputSettings;
+  onOutput: (patch: Partial<LyricsOutputSettings>) => void;
+  /** First selected library track (the source of the output window in manual mode). */
+  selectedPath: string | null;
+  notify: (message: string, kind?: "info" | "error") => void;
   /** Called after a fetch wrote something, so the caller can re-index embedded writes. */
   onStored?: (path: string, result: LyricsResult) => void;
 }) {
@@ -52,6 +65,12 @@ export function LyricsPanel({
   const [fetching, setFetching] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+  const [showOutput, setShowOutput] = useState(false);
+
+  // Click a synced line: the player that is playing this file jumps there.
+  const seekTo = (ms: number) => {
+    if (path && !requestSeek(path, ms)) notify("Press play on the track first, then click a line to jump.");
+  };
 
   useEffect(() => {
     if (!open || !path) return;
@@ -99,8 +118,20 @@ export function LyricsPanel({
     }
   };
 
+  const bridge = (
+    <LyricsOutputBridge
+      settings={output}
+      onSettings={onOutput}
+      prelistenPath={path}
+      selectedPath={selectedPath}
+      refreshKey={nonce}
+    />
+  );
+
   if (!open) {
     return (
+      <>
+      {bridge}
       <button
         onClick={() => setOpenPersist(true)}
         className="fixed bottom-4 right-4 z-40 flex items-center gap-1.5 rounded-full border bg-card px-3 py-1.5 text-xs shadow-md hover:bg-accent"
@@ -109,11 +140,14 @@ export function LyricsPanel({
         <Mic2 className="h-3.5 w-3.5" />
         Lyrics
       </button>
+      </>
     );
   }
 
   return (
-    <div className="fixed bottom-4 right-4 z-40 flex h-80 w-80 flex-col overflow-hidden rounded-lg border bg-card shadow-xl">
+    <>
+    {bridge}
+    <div className={cn("fixed bottom-4 right-4 z-40 flex w-80 flex-col overflow-hidden rounded-lg border bg-card shadow-xl", showOutput ? "h-[34rem]" : "h-80")}>
       <div className="flex items-center gap-2 border-b px-3 py-2">
         <Mic2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate text-xs font-medium" title={path ?? undefined}>
@@ -141,8 +175,10 @@ export function LyricsPanel({
             <div
               key={i}
               ref={i === active ? activeRef : undefined}
+              onClick={() => seekTo(l.timeMs)}
+              title="Jump to this line"
               className={cn(
-                "py-0.5 leading-snug transition-colors",
+                "cursor-pointer rounded py-0.5 leading-snug transition-colors hover:bg-accent/50",
                 i === active ? "font-semibold text-primary" : i < active ? "text-muted-foreground/60" : "text-muted-foreground",
               )}
             >
@@ -167,11 +203,23 @@ export function LyricsPanel({
           </div>
         )}
       </div>
-      {data && !data.instrumental && (
-        <div className="border-t px-3 py-1 text-[10px] text-muted-foreground">
-          {data.synced ? "Synced" : "Plain"} · from {data.source}
+      {showOutput && (
+        <div className="max-h-72 shrink-0 overflow-y-auto">
+          <LyricsOutputControls value={output} onChange={onOutput} onError={(m) => notify(m, "error")} />
         </div>
       )}
+      <div className="flex items-center border-t px-3 py-1 text-[10px] text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate">
+          {data && !data.instrumental ? `${data.synced ? "Synced" : "Plain"} · from ${data.source}` : ""}
+        </span>
+        <button
+          onClick={() => setShowOutput((v) => !v)}
+          className="flex shrink-0 items-center gap-0.5 rounded px-1 hover:bg-accent hover:text-foreground"
+        >
+          Output {showOutput ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />}
+        </button>
+      </div>
     </div>
+    </>
   );
 }
