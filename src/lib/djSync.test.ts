@@ -15,7 +15,6 @@ import {
   type Selection,
   type SideState,
   type SyncOutput,
-  type SyncPlan,
   type SyncSettings,
   type SyncState,
   type TrackMeta,
@@ -99,7 +98,7 @@ function applyToMixxx(mx: SideState, out: SyncOutput): SideState {
     const m = next.meta[u.path];
     if (!m) continue;
     for (const f of ["bpm", "key", "rating", "plays", "comment", "color"] as const) {
-      if (u[f] !== undefined) (m as Record<string, string | number>)[f] = u[f]!;
+      if (u[f] !== undefined) (m as unknown as Record<string, string | number>)[f] = u[f]!;
     }
   }
   return next;
@@ -115,7 +114,7 @@ function importIntoRekordbox(rb: SideState, out: SyncOutput): SideState {
       next.lists[e.key] = { name: e.name, members: e.members, ref: `p:${e.name}` };
     }
   }
-  for (const e of out.toRekordbox.meta) (next.meta[e.key] as Record<string, string | number>)[e.field] = e.to;
+  for (const e of out.toRekordbox.meta) (next.meta[e.key] as unknown as Record<string, string | number>)[e.field] = e.to;
   return next;
 }
 

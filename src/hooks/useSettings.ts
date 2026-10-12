@@ -3,10 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import type { Settings } from "../types";
 import { DEFAULT_STEM_OPTIONS } from "../types";
+import { DEFAULT_SYNC_SETTINGS } from "../lib/djSync";
 import { DEFAULT_FLAG_EXTRA_CHARS, DEFAULT_REPLACEMENTS } from "../lib/standardize";
 
 // 22 is reserved for C1 (playlists); gaps are fine.
-export const CURRENT_SETTINGS_VERSION = 23;
+export const CURRENT_SETTINGS_VERSION = 24;
 
 export const DEFAULT_SETTINGS: Settings = {
   aiBackend: "ollama",
@@ -39,6 +40,7 @@ export const DEFAULT_SETTINGS: Settings = {
   keyNotation: "stored",
   libraryAutoRefresh: false,
   aiControl: false,
+  djSync: DEFAULT_SYNC_SETTINGS,
   themeId: "",
   plugins: {},
   pluginStoreUrl: "",
@@ -251,6 +253,10 @@ export function migrate(s: Settings, savedVersion: number): Settings {
     next.themeId = typeof next.themeId === "string" ? next.themeId : "";
     next.plugins = next.plugins && typeof next.plugins === "object" ? next.plugins : {};
     next.pluginStoreUrl = typeof next.pluginStoreUrl === "string" ? next.pluginStoreUrl : "";
+  }
+  if (savedVersion < 24) {
+    // C2: djSync (filled in by the merge; the sync dialog completes the nested `dirs`).
+    next.djSync = { ...DEFAULT_SYNC_SETTINGS, ...(next.djSync ?? {}) };
   }
   next.settingsVersion = CURRENT_SETTINGS_VERSION;
   return next;

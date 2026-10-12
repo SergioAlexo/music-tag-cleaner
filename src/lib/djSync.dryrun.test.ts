@@ -1,3 +1,4 @@
+// @ts-nocheck -- node-only harness (fs, process); not part of the app bundle
 /**
  * Dry run against COPIES of the owner's real databases. Skipped unless
  * MTC_SYNC_DRYRUN_DIR holds rb.json / mx.json (see the `dryrun_*` ignored tests
