@@ -103,10 +103,12 @@ export function AiControlCard({
                 {status && !status.mcpExeExists ? (
                   <>
                     {" "}
-                    was not found next to the app at <code>{exe}</code>; build it with{" "}
+                    was not found next to the app at <code>{exe}</code>; reinstall the app, or build it with{" "}
                     <code>cargo build --release</code> in the <code>mcp</code> folder and copy it there
                   </>
-                ) : null}
+                ) : (
+                  "ships with the app"
+                )}
                 ):
               </p>
               <div className="flex items-start gap-2">

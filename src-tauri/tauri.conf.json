@@ -4,9 +4,9 @@
   "version": "0.19.0",
   "identifier": "com.sopas.musictagcleaner",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "node scripts/build-sidecar.mjs --debug && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "node scripts/build-sidecar.mjs && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -41,6 +41,9 @@
       "icons/icon.png"
     ],
     "createUpdaterArtifacts": true,
+    "externalBin": [
+      "binaries/mtc-mcp"
+    ],
     "windows": {
       "nsis": {
         "installerHooks": "./windows/hooks.nsh"
