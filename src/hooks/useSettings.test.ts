@@ -73,6 +73,17 @@ describe("migrate", () => {
     expect(next.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
     expect(next.aiControl).toBe(false);
   });
+  it("v26 (F3) adds the lyrics output settings with defaults and keeps valid saved ones", () => {
+    const old: any = { ...DEFAULT_SETTINGS };
+    delete old.lyricsOutput;
+    const next = migrate(old, 25);
+    expect(next.lyricsOutput.style).toBe("clean");
+    expect(next.lyricsOutput.mode).toBe("prelisten");
+    expect(next.settingsVersion).toBe(CURRENT_SETTINGS_VERSION);
+    const kept = migrate({ ...DEFAULT_SETTINGS, lyricsOutput: { ...DEFAULT_SETTINGS.lyricsOutput, style: "neon", fontSize: 9999 } }, 25);
+    expect(kept.lyricsOutput.style).toBe("neon");
+    expect(kept.lyricsOutput.fontSize).toBe(160);
+  });
   it("v23 (D2) adds plugin state with OS-follow theme as the default and keeps existing values", () => {
     const old: any = { ...DEFAULT_SETTINGS, theme: "system" };
     delete old.themeId;

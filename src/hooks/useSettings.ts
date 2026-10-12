@@ -4,10 +4,11 @@ import { load, type Store } from "@tauri-apps/plugin-store";
 import type { Settings } from "../types";
 import { DEFAULT_STEM_OPTIONS } from "../types";
 import { DEFAULT_SYNC_SETTINGS } from "../lib/djSync";
+import { DEFAULT_LYRICS_OUTPUT, normalizeOutputSettings } from "../lib/lyricsOutput";
 import { DEFAULT_FLAG_EXTRA_CHARS, DEFAULT_REPLACEMENTS } from "../lib/standardize";
 
-// 22 is reserved for C1 (playlists); gaps are fine.
-export const CURRENT_SETTINGS_VERSION = 24;
+// 22 is reserved for C1 (playlists), 25 for F2; gaps are fine.
+export const CURRENT_SETTINGS_VERSION = 26;
 
 export const DEFAULT_SETTINGS: Settings = {
   aiBackend: "ollama",
@@ -45,6 +46,7 @@ export const DEFAULT_SETTINGS: Settings = {
   plugins: {},
   pluginStoreUrl: "",
   lyricsStorage: "sidecar",
+  lyricsOutput: DEFAULT_LYRICS_OUTPUT,
   languageAppendComment: false,
   theme: "system",
   visibleColumns: [
@@ -109,6 +111,7 @@ function sanitizeNumbers<T extends object>(obj: T | undefined, defaults: T): T {
  */
 export function mergeWithDefaults(saved: Partial<Settings>): Settings {
   const merged: Settings = { ...DEFAULT_SETTINGS, ...saved };
+  merged.lyricsOutput = normalizeOutputSettings(saved.lyricsOutput);
   merged.djApp = { ...DEFAULT_SETTINGS.djApp, ...saved.djApp };
   merged.stemOptions = { ...DEFAULT_SETTINGS.stemOptions, ...saved.stemOptions };
   merged.claudeTasks = {
@@ -257,6 +260,10 @@ export function migrate(s: Settings, savedVersion: number): Settings {
   if (savedVersion < 24) {
     // C2: djSync (filled in by the merge; the sync dialog completes the nested `dirs`).
     next.djSync = { ...DEFAULT_SYNC_SETTINGS, ...(next.djSync ?? {}) };
+  }
+  if (savedVersion < 26) {
+    // F3: lyrics output window (style, size, sync offset, background, mode, monitor).
+    next.lyricsOutput = normalizeOutputSettings(next.lyricsOutput);
   }
   next.settingsVersion = CURRENT_SETTINGS_VERSION;
   return next;

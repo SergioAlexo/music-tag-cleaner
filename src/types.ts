@@ -1,4 +1,5 @@
 import type { SyncSettings } from "./lib/djSync";
+import type { LyricsOutputSettings } from "./lib/lyricsOutput";
 import type { GenreClickChoice } from "./lib/sessionTabs";
 
 export interface AudioFile {
@@ -312,6 +313,8 @@ export interface Settings {
   pluginStoreUrl: string;
   /** Where fetched lyrics go: a sidecar .lrc/.txt next to the audio, the file's own lyrics tag, or both. */
   lyricsStorage: LyricsStorage;
+  /** F3: the lyrics output window (projector / OBS): style, size, sync offset, background, source mode, monitor. */
+  lyricsOutput: LyricsOutputSettings;
   /** Also append `#lang-xx` to Comment when language suggestions are applied (Rekordbox cannot show TLAN). */
   languageAppendComment: boolean;
   /**

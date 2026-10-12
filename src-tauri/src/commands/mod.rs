@@ -17,6 +17,7 @@ pub mod ffmpeg;
 pub mod files;
 pub mod library_index;
 pub mod lyrics;
+pub mod lyrics_output;
 pub mod mixxx_db;
 pub mod organize;
 pub mod plugin_store;

@@ -20,6 +20,8 @@ import { searchTracks } from "./trackSearch";
 import type { ActionCtx, ActionRegistry, JsonSchema } from "./actions";
 import { NO_PARAMS } from "./actions";
 import type { FacetPick } from "./facets";
+import { BACKGROUNDS, STYLES, normalizeOutputSettings } from "./lyricsOutput";
+import { closeLyricsOutput, lyricsOutputIsOpen, openLyricsOutput } from "./lyricsOutputCtl";
 
 export const PAGES = ["library", "duplicates", "playlists", "ytmusic", "components", "plugins", "settings", "logs"] as const;
 export type AppPage = (typeof PAGES)[number];
@@ -793,6 +795,48 @@ export function registerAppActions(reg: ActionRegistry, get: () => AppEnv): void
       loaded(p.paths);
       await env().h.fetchLyrics(p.paths);
       return { done: true };
+    },
+  });
+
+  reg.register({
+    id: "lyrics.output.open",
+    title: "Open the lyrics output window",
+    description:
+      "Opens (or focuses) the second window that shows the current and next lyric line big, for a projector or an OBS overlay. It follows the prelisten player, or is driven by hand in manual mode.",
+    params: NO_PARAMS,
+    run: async () => {
+      await openLyricsOutput();
+      return { open: true, style: env().settings.lyricsOutput.style };
+    },
+  });
+
+  reg.register({
+    id: "lyrics.output.close",
+    title: "Close the lyrics output window",
+    params: NO_PARAMS,
+    run: async () => {
+      const was = await lyricsOutputIsOpen();
+      if (was) await closeLyricsOutput();
+      return { open: false, wasOpen: was };
+    },
+  });
+
+  reg.register({
+    id: "lyrics.output.style",
+    title: "Change the lyrics output look",
+    description: "Sets any of: style, background, font size, sync offset, previous line, source mode. Omitted fields stay as they are. Persisted.",
+    params: obj({
+      style: { type: "string", enum: STYLES.map((s) => s.id) },
+      background: { type: "string", enum: BACKGROUNDS.map((b) => b.id) },
+      fontSize: { type: "number", description: "Current-line size (24-160)" },
+      offsetMs: { type: "number", description: "Added to the playback time; positive = lyrics earlier (-10000..10000)" },
+      showPrev: { type: "boolean" },
+      mode: { type: "string", enum: ["prelisten", "manual"] },
+    }),
+    run: (p: Record<string, unknown>) => {
+      const next = normalizeOutputSettings({ ...env().settings.lyricsOutput, ...p });
+      env().savePatch({ lyricsOutput: next });
+      return { lyricsOutput: next };
     },
   });
 

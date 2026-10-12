@@ -2630,7 +2630,13 @@ This rewrites the ${meta.singular} tag on ${
         </main>
       </div>
 
-      <LyricsPanel storage={settings.lyricsStorage} onStored={(p, r) => r.embedded && void reindexLibraryPaths([p])} />
+      <LyricsPanel
+        storage={settings.lyricsStorage}
+        output={settings.lyricsOutput}
+        onOutput={(patch) => savePatch({ lyricsOutput: { ...settingsRef.current.lyricsOutput, ...patch } })}
+        selectedPath={filesApi.selectedPaths[0] ?? null}
+        notify={notify}
+        onStored={(p, r) => r.embedded && void reindexLibraryPaths([p])} />
 
       <StatusBar
         fileCount={filesApi.files.length}
