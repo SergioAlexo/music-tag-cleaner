@@ -1,19 +1,34 @@
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { AlertTriangle, FolderOpen, Puzzle, RefreshCw, Sparkles, Trash2 } from "lucide-react";
+import { AlertTriangle, Download, FolderOpen, Puzzle, RefreshCw, Sparkles, Trash2 } from "lucide-react";
 import type { Settings } from "../types";
 import type { PluginEntry, PluginManager, PluginStatus } from "../plugins/manager";
 import { Badge, Button, Card, CardHeader, cn, inputClass } from "../components/ui";
 import { NewButtonDialog } from "../components/NewButtonDialog";
 import { actionRegistry } from "../lib/actions";
+import { parseStoreIndex, storeStatus, type StoreEntry } from "../plugins/store";
 import { ThemePicker } from "../components/ThemePicker";
 import { useInstalledThemes } from "../plugins/useAppTheme";
 import { PluginReviewDialog, describePermission } from "../components/PluginReviewDialog";
 
 type Notify = (message: string, kind?: "success" | "error" | "info") => void;
-type Tab = "installed" | "themes";
+type Tab = "installed" | "store" | "themes";
+
+interface StoreState {
+  loading: boolean;
+  entries: StoreEntry[];
+  problems: string[];
+  error: string;
+  loaded: boolean;
+}
+
+interface StorePackage {
+  id: string;
+  manifest: string;
+  code: string | null;
+}
 
 const STATUS_LABEL: Record<PluginStatus, { text: string; cls: string }> = {
   running: { text: "On", cls: "bg-primary/15 text-primary" },
@@ -45,6 +60,39 @@ export function PluginsPage({
   const [reviewing, setReviewing] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [newButton, setNewButton] = useState(false);
+  const [store, setStore] = useState<StoreState>({ loading: false, entries: [], problems: [], error: "", loaded: false });
+  const [urlDraft, setUrlDraft] = useState(settings.pluginStoreUrl);
+  const storeUrl = settings.pluginStoreUrl.trim();
+
+  const loadStore = async () => {
+    if (!storeUrl) return setStore({ loading: false, entries: [], problems: [], error: "", loaded: true });
+    setStore((s) => ({ ...s, loading: true, error: "" }));
+    try {
+      const text = await invoke<string>("plugin_store_index", { url: storeUrl });
+      const parsed = parseStoreIndex(text, storeUrl);
+      setStore({ loading: false, entries: parsed.entries, problems: parsed.problems, error: "", loaded: true });
+    } catch (e) {
+      setStore({ loading: false, entries: [], problems: [], error: String(e), loaded: true });
+    }
+  };
+  // Fetch once per store address (also gives the update count on the tab label).
+  const fetchedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (fetchedFor.current === storeUrl) return;
+    fetchedFor.current = storeUrl;
+    if (storeUrl) void loadStore();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeUrl]);
+
+  /** Downloads + verifies in Rust, then stages for the normal review dialog. */
+  const installFromStore = async (entry: StoreEntry) => {
+    const pkg = await invoke<StorePackage>("plugin_store_package", { url: entry.url, sha256: entry.sha256 });
+    if (pkg.id !== entry.id) throw new Error(`The package contains "${pkg.id}", not "${entry.id}". Not installed.`);
+    const res = await manager.propose(pkg.manifest, pkg.code, "store");
+    if (res.status === "invalid") throw new Error(`The package is not valid:\n- ${res.errors.join("\n- ")}`);
+    setReviewing(res.id);
+  };
+  const updateCount = store.entries.filter((e) => storeStatus(e, manager.entry(e.id)?.manifest) === "update").length;
 
   const guard = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -72,7 +120,7 @@ export function PluginsPage({
       </div>
 
       <div className="flex gap-1 border-b">
-        {(["installed", "themes"] as Tab[]).map((t) => (
+        {(["installed", "store", "themes"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -82,6 +130,9 @@ export function PluginsPage({
             )}
           >
             {t}
+            {t === "store" && updateCount > 0 && (
+              <span className="ml-1.5 rounded-full bg-primary px-1.5 py-0.5 text-[10px] text-primary-foreground">{updateCount}</span>
+            )}
           </button>
         ))}
       </div>
@@ -136,6 +187,84 @@ export function PluginsPage({
             >
               <FolderOpen /> Open plugins folder
             </Button>
+          </div>
+        </Card>
+      )}
+
+      {tab === "store" && (
+        <Card>
+          <CardHeader
+            title="Plugin store"
+            hint="A list of free plugins published at an address you choose. Every download is checked against its published SHA-256 and shown to you for review before it runs."
+          />
+          <div className="space-y-3 px-5 py-4">
+            <div className="flex gap-2">
+              <input
+                className={cn(inputClass, "flex-1 select-text")}
+                placeholder="https://raw.githubusercontent.com/you/plugin-store/main/index.json"
+                value={urlDraft}
+                onChange={(e) => setUrlDraft(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && onUpdate((p) => ({ ...p, pluginStoreUrl: urlDraft.trim() }))}
+              />
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={urlDraft.trim() === storeUrl}
+                onClick={() => onUpdate((p) => ({ ...p, pluginStoreUrl: urlDraft.trim() }))}
+              >
+                Save
+              </Button>
+              <Button size="sm" variant="ghost" disabled={!storeUrl || store.loading} onClick={() => void loadStore()}>
+                <RefreshCw /> Check
+              </Button>
+            </div>
+            {!storeUrl && <p className="text-sm text-muted-foreground">No store configured. Paste the address of a store index above.</p>}
+            {store.loading && <p className="text-sm text-muted-foreground">Contacting the store…</p>}
+            {store.error && <p className="text-sm text-destructive">{store.error}</p>}
+            {store.problems.length > 0 && (
+              <ul className="list-disc pl-4 text-xs text-amber-600 dark:text-amber-400">
+                {store.problems.map((x) => (
+                  <li key={x}>{x}</li>
+                ))}
+              </ul>
+            )}
+            {storeUrl && store.loaded && !store.loading && !store.error && store.entries.length === 0 && (
+              <p className="text-sm text-muted-foreground">The store lists no plugins.</p>
+            )}
+          </div>
+          <div className="divide-y border-t">
+            {store.entries.map((e) => {
+              const st = storeStatus(e, manager.entry(e.id)?.manifest);
+              return (
+                <div key={e.id} className="flex items-start gap-3 px-5 py-3.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-semibold">{e.manifest.name}</span>
+                      <span className="text-xs text-muted-foreground">v{e.manifest.version}</span>
+                      {e.manifest.kind === "theme" && <Badge className="bg-secondary text-secondary-foreground">Theme</Badge>}
+                    </div>
+                    <p className="text-xs text-muted-foreground">{e.manifest.description}</p>
+                    <p className="text-[11px] text-muted-foreground">by {e.manifest.author}</p>
+                    {e.manifest.permissions.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {e.manifest.permissions.map((p) => (
+                          <span key={p} className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px]">
+                            {p}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {st === "installed" ? (
+                    <Badge className="bg-secondary text-secondary-foreground">Installed</Badge>
+                  ) : (
+                    <Button size="sm" disabled={busy} onClick={() => guard(() => installFromStore(e))}>
+                      <Download /> {st === "update" ? "Update" : "Install"}
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </Card>
       )}

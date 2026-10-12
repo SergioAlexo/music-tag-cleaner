@@ -161,6 +161,8 @@ fn main() {
             commands::plugins::plugins_write,
             commands::plugins::plugins_remove,
             commands::plugins::plugins_http,
+            commands::plugin_store::plugin_store_index,
+            commands::plugin_store::plugin_store_package,
             commands::files::scan_folder,
             commands::files::list_files,
             commands::files::import_paths,
