@@ -2,10 +2,12 @@ import { useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { AlertTriangle, FolderOpen, Puzzle, RefreshCw, Trash2 } from "lucide-react";
+import { AlertTriangle, FolderOpen, Puzzle, RefreshCw, Sparkles, Trash2 } from "lucide-react";
 import type { Settings } from "../types";
 import type { PluginEntry, PluginManager, PluginStatus } from "../plugins/manager";
 import { Badge, Button, Card, CardHeader, cn, inputClass } from "../components/ui";
+import { NewButtonDialog } from "../components/NewButtonDialog";
+import { actionRegistry } from "../lib/actions";
 import { ThemePicker } from "../components/ThemePicker";
 import { useInstalledThemes } from "../plugins/useAppTheme";
 import { PluginReviewDialog, describePermission } from "../components/PluginReviewDialog";
@@ -28,17 +30,21 @@ export function PluginsPage({
   settings,
   notify,
   onUpdate,
+  generate,
 }: {
   manager: PluginManager;
   settings: Settings;
   notify: Notify;
   onUpdate: (fn: (prev: Settings) => Settings) => void;
+  /** One prompt through the configured AI backend (useAI.generateText). */
+  generate: (prompt: string) => Promise<string>;
 }) {
   useSyncExternalStore(manager.subscribe, manager.getVersion);
   const installedThemes = useInstalledThemes(manager);
   const [tab, setTab] = useState<Tab>("installed");
   const [reviewing, setReviewing] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [newButton, setNewButton] = useState(false);
 
   const guard = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -117,6 +123,9 @@ export function PluginsPage({
             ))}
           </div>
           <div className="flex gap-2 border-t px-5 py-3">
+            <Button size="sm" onClick={() => setNewButton(true)}>
+              <Sparkles /> New button with AI
+            </Button>
             <Button variant="ghost" size="sm" onClick={() => guard(() => manager.refresh())}>
               <RefreshCw /> Rescan
             </Button>
@@ -142,6 +151,21 @@ export function PluginsPage({
             />
           </div>
         </Card>
+      )}
+
+      {newButton && (
+        <NewButtonDialog
+          backend={settings.aiBackend}
+          actionIds={actionRegistry.list().map((a) => a.id)}
+          generate={generate}
+          onClose={() => setNewButton(false)}
+          onGenerated={async (manifestText, code) => {
+            const res = await manager.propose(manifestText, code, "ai");
+            if (res.status === "invalid") return `The plugin is not valid:\n- ${res.errors.join("\n- ")}`;
+            setReviewing(res.id);
+            return null;
+          }}
+        />
       )}
 
       {proposal && reviewing !== null && (

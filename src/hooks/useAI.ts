@@ -225,5 +225,25 @@ export function useAI() {
     return { rows, stopped: stopRef.current, unresolved, batchErrors };
   };
 
-  return { status, check, runClean, stop };
+  /**
+   * One free-form prompt through the configured backend (D2 "New button").
+   * "manual" has no way to answer by itself, so it is refused here and the
+   * dialog offers copy-prompt / paste-answer instead.
+   */
+  const generateText = async (prompt: string, settings: Settings, model: string): Promise<string> => {
+    if (settings.aiBackend === "claude") {
+      if (!navigator.onLine) throw new Error(CLAUDE_OFFLINE_MESSAGE);
+      return invoke<string>("claude_generate_text", {
+        prompt,
+        model: settings.claudeTasks.clean.model || null,
+        effort: settings.claudeTasks.clean.effort || null,
+      });
+    }
+    if (settings.aiBackend === "ollama") {
+      return invoke<string>("ai_generate_text", { url: settings.ollamaUrl, model, prompt });
+    }
+    throw new Error("The manual AI backend cannot answer by itself");
+  };
+
+  return { status, check, runClean, generateText, stop };
 }

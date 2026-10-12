@@ -2568,7 +2568,13 @@ This rewrites the ${meta.singular} tag on ${
               onFfmpegChanged={refreshFfmpeg}
             />
           ) : page === "plugins" ? (
-            <PluginsPage manager={pluginManager} settings={settings} notify={notify} onUpdate={update} />
+            <PluginsPage
+              manager={pluginManager}
+              settings={settings}
+              notify={notify}
+              onUpdate={update}
+              generate={(prompt) => ai.generateText(prompt, settings, settings.ollamaModel)}
+            />
           ) : page === "logs" ? (
             <LogsPage
               logs={logs}

@@ -225,6 +225,33 @@ pub async fn ai_clean_batch(
     parse_cleaned(text)
 }
 
+/// Generic text generation through Ollama (D2 "New button"): one prompt in,
+/// the model's reply out, no JSON mode and no track parsing. Kept next to
+/// `ai_clean_batch` so the backend choice stays in one place.
+#[tauri::command]
+pub async fn ai_generate_text(url: String, model: String, prompt: String) -> Result<String, String> {
+    let body = json!({ "model": model, "prompt": prompt, "stream": false });
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(600))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .post(format!("{}/api/generate", url.trim_end_matches('/')))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Could not reach Ollama: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("Ollama returned HTTP {}", resp.status()));
+    }
+    let v: Value = resp.json().await.map_err(|e| format!("Invalid response from Ollama: {e}"))?;
+    let text = v["response"]
+        .as_str()
+        .ok_or_else(|| "Ollama response is missing the 'response' field".to_string())?;
+    Ok(strip_reasoning(text).trim().to_string())
+}
+
 pub(crate) fn parse_cleaned(text: &str) -> Result<Vec<CleanedTrack>, String> {
     let text = strip_reasoning(text);
     if let Ok(v) = serde_json::from_str::<Value>(text.trim()) {
