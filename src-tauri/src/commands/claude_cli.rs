@@ -664,6 +664,27 @@ pub async fn claude_clean_batch(
     ai::parse_cleaned(&text)
 }
 
+/// Generic text generation through the Claude CLI (D2 "New button"): one
+/// prompt in, the answer out. Same offline check, tool denial and timeout as
+/// the tag batches.
+#[tauri::command]
+pub async fn claude_generate_text(
+    prompt: String,
+    model: Option<String>,
+    effort: Option<String>,
+) -> Result<String, String> {
+    let (text, _envelope) = tauri::async_runtime::spawn_blocking(move || {
+        let exe = find_claude().ok_or_else(|| {
+            "No Claude CLI found — install it, or switch the AI backend in Settings.".to_string()
+        })?;
+        run_prompt(&exe, &prompt, model.as_deref(), effort.as_deref(), Duration::from_secs(180))
+            .map_err(|e| e.message)
+    })
+    .await
+    .map_err(|_| "The Claude CLI task panicked".to_string())??;
+    Ok(text)
+}
+
 /// AI playlists (D5) through the Claude CLI backend, using workstream F's
 /// `claudeTasks.playlist` model/effort pair rather than the Clean task's.
 #[tauri::command]

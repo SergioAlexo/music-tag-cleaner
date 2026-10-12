@@ -16,6 +16,7 @@ import {
   ImagePlus,
   Languages,
   Layers,
+  Puzzle,
   Link2,
   Loader2,
   Mic2,
@@ -42,6 +43,8 @@ import { internalDrag } from "../lib/internalDrag";
 import { matchesTerms, parseQuery } from "../lib/trackSearch";
 import { matchesShortcut, shortcutFor } from "../lib/shortcuts";
 import { useVirtualRows } from "../hooks/useVirtualRows";
+import { usePluginUi, pluginColumnValue } from "../plugins/pluginUi";
+import type { UiColumn } from "../plugins/host";
 
 /**
  * One collator for every table sort: `localeCompare` builds its comparison
@@ -141,6 +144,19 @@ export const ALL_COLUMNS: ColumnDef[] = [
   { id: "size", label: "Size", width: 84, value: (f) => formatBytes(f.size), align: "right" },
   { id: "imageInfo", label: "Artwork", width: 150, value: () => "", custom: "imageInfo" },
 ];
+
+/**
+ * D2: plugin columns live in the same array (ids `plugin.<plugin>.<column>`) so
+ * the Columns menu, saved visibility and the `table.setColumns` action all see
+ * them like any other column. Values come from the plugin's sandbox, computed
+ * ahead of time by `usePlugins` and read here synchronously.
+ */
+export function syncPluginColumns(cols: UiColumn[]) {
+  for (let k = ALL_COLUMNS.length - 1; k >= 0; k--) if (ALL_COLUMNS[k].id.startsWith("plugin.")) ALL_COLUMNS.splice(k, 1);
+  for (const c of cols) {
+    ALL_COLUMNS.push({ id: c.id, label: c.label, width: c.width, value: (f) => pluginColumnValue(c.id, f.path) });
+  }
+}
 
 /** Small marker for a value that comes from (or disagrees with) Rekordbox. */
 function RekordboxMark() {
@@ -815,10 +831,13 @@ export function TrackTable({
   const rh = ROW_STYLE[rowHeight];
   // Order follows visibleColumns (drag-and-drop reorders that array), not
   // ALL_COLUMNS' fixed definition order.
+  const pluginUi = usePluginUi();
   const curatedColumns = useMemo(() => {
     const byId = new Map(ALL_COLUMNS.map((c) => [c.id, c]));
     return visibleColumns.map((id) => byId.get(id)).filter((c): c is ColumnDef => !!c);
-  }, [visibleColumns]);
+    // pluginUi.version: plugin columns come and go with their plugins.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleColumns, pluginUi.version]);
 
   const flagged = useMemo(() => {
     const set = new Set<string>();
@@ -1666,6 +1685,18 @@ export function TrackTable({
             <Filter />
             Flagged{flagged.size > 0 ? ` (${flagged.size})` : ""}
           </Button>
+          {pluginUi.buttons.map((b) => (
+            <Button
+              key={`${b.pluginId}:${b.id}`}
+              variant="ghost"
+              size="sm"
+              onClick={() => pluginUi.run("button", b.pluginId, b.id, pluginUi.getSelection())}
+              title={b.title ?? `${b.label} (plugin: ${b.pluginName})`}
+            >
+              <Puzzle />
+              {b.label}
+            </Button>
+          ))}
           <Button
             variant={showAllTags ? "secondary" : "ghost"}
             size="sm"
@@ -2390,6 +2421,15 @@ export function TrackTable({
               label: n > 1 ? `Move ${n} to collection…` : "Move to collection…",
               run: () => onMoveToCollection(menu.paths),
             });
+          }
+          if (pluginUi.menuItems.length) {
+            items.push(null);
+            for (const it of pluginUi.menuItems)
+              items.push({
+                icon: Puzzle,
+                label: it.label,
+                run: () => pluginUi.run("menu", it.pluginId, it.id, menu.paths),
+              });
           }
           items.push(null, {
             icon: Trash2,
