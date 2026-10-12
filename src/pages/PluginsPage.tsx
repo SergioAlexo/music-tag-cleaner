@@ -6,10 +6,12 @@ import { AlertTriangle, FolderOpen, Puzzle, RefreshCw, Trash2 } from "lucide-rea
 import type { Settings } from "../types";
 import type { PluginEntry, PluginManager, PluginStatus } from "../plugins/manager";
 import { Badge, Button, Card, CardHeader, cn, inputClass } from "../components/ui";
+import { ThemePicker } from "../components/ThemePicker";
+import { useInstalledThemes } from "../plugins/useAppTheme";
 import { PluginReviewDialog, describePermission } from "../components/PluginReviewDialog";
 
 type Notify = (message: string, kind?: "success" | "error" | "info") => void;
-type Tab = "installed";
+type Tab = "installed" | "themes";
 
 const STATUS_LABEL: Record<PluginStatus, { text: string; cls: string }> = {
   running: { text: "On", cls: "bg-primary/15 text-primary" },
@@ -25,6 +27,7 @@ export function PluginsPage({
   manager,
   settings,
   notify,
+  onUpdate,
 }: {
   manager: PluginManager;
   settings: Settings;
@@ -32,6 +35,7 @@ export function PluginsPage({
   onUpdate: (fn: (prev: Settings) => Settings) => void;
 }) {
   useSyncExternalStore(manager.subscribe, manager.getVersion);
+  const installedThemes = useInstalledThemes(manager);
   const [tab, setTab] = useState<Tab>("installed");
   const [reviewing, setReviewing] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -62,7 +66,7 @@ export function PluginsPage({
       </div>
 
       <div className="flex gap-1 border-b">
-        {(["installed"] as Tab[]).map((t) => (
+        {(["installed", "themes"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -123,6 +127,19 @@ export function PluginsPage({
             >
               <FolderOpen /> Open plugins folder
             </Button>
+          </div>
+        </Card>
+      )}
+
+      {tab === "themes" && (
+        <Card>
+          <CardHeader title="Themes" hint="Pick a look. Installed theme plugins show up here too; Follow OS keeps the default." />
+          <div className="px-5 py-4">
+            <ThemePicker
+              themeId={settings.themeId}
+              installed={installedThemes}
+              onPick={(id) => onUpdate((prev) => ({ ...prev, themeId: id }))}
+            />
           </div>
         </Card>
       )}
