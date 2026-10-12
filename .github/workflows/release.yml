@@ -40,7 +40,9 @@ jobs:
       # release build is most of this job's ~14 minutes.
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: "src-tauri -> target"
+          workspaces: |
+            src-tauri -> target
+            mcp -> target
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -58,6 +60,10 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # No separate step builds the MCP helper: tauri.conf.json's
+      # beforeBuildCommand runs scripts/build-sidecar.mjs, which compiles mcp/
+      # (release) and copies it to src-tauri/binaries/mtc-mcp-<triple>[.exe]
+      # for bundle.externalBin. It needs only the Rust toolchain installed above.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
