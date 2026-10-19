@@ -33,6 +33,10 @@ class Emitter:
 def make_emitter() -> Emitter:
     """Capture the real stdout, then point sys.stdout at stderr so stray library prints
     cannot corrupt the protocol."""
+    try:   # JSON lines are UTF-8 whatever the console code page is (file names, preset names)
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
     emitter = Emitter(sys.stdout)
     sys.stdout = sys.stderr
     return emitter

@@ -33,7 +33,7 @@ def test_version():
     rc, lines = run("version")
     assert rc == 0
     data = one_result(lines)
-    assert data == {"name": "presetforge", "version": "0.1.0", "formats": ["serum1", "serum2", "vital"]}
+    assert data == {"name": "presetforge", "version": "0.1.0", "formats": ["serum1", "serum2", "surge", "dexed", "vital"]}
 
 
 def test_bad_args_fatal_error_line():

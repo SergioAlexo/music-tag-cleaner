@@ -6,13 +6,15 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .readers import dexed, surge
+
 SERUM2_MAGIC = b"XferJson"
 SERUM1_PLUGIN_ID = b"XfsX"
 
 
 @dataclass
 class Detected:
-    synth: str  # serum1 | serum2 | vital | unknown
+    synth: str  # serum1 | serum2 | surge | dexed | vital | unknown
     name: str
     supported: bool
     reason: str | None = None
@@ -29,6 +31,15 @@ def _serum_name(synth: str, path: Path, fallback: str) -> str:
         return fallback
 
 
+def _detect_dx7(path: Path, stem: str, kind: str | None) -> Detected:
+    try:
+        data = path.read_bytes() if path.stat().st_size <= 1 << 20 else b""
+        voices, _ = dexed.parse_syx(data)
+    except (OSError, dexed.DexedError) as exc:
+        return Detected("unknown", stem, False, f"not a readable DX7 SysEx dump: {exc}")
+    return Detected("dexed", voices[0].name or stem if len(voices) == 1 else stem, True)
+
+
 def detect(path: Path) -> Detected:
     stem = path.stem
     try:
@@ -43,7 +54,12 @@ def detect(path: Path) -> Detected:
     if head[:4] == b"CcnK":
         if head[8:12] == b"FPCh" and head[16:20] == SERUM1_PLUGIN_ID:
             return Detected("serum1", _serum_name("serum1", path, stem), True)
-        return Detected("unknown", stem, False, "VST2 preset for a plugin other than Serum 1")
+        if surge.looks_like_surge(head):
+            return Detected("surge", surge.program_name(head) or stem, True)
+        return Detected("unknown", stem, False, "VST2 preset for a plugin other than Serum 1 or Surge XT")
+    kind = dexed.looks_like_dx7(head)
+    if kind or path.suffix.lower() == ".syx":
+        return _detect_dx7(path, stem, kind)
     if head.lstrip()[:1] == b"{":
         try:
             doc = json.loads(path.read_text(encoding="utf-8"))

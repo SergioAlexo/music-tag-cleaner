@@ -58,7 +58,7 @@ def cmd_scan(args, out):
 
 
 def cmd_convert(args, out):
-    from .convert import convert_one, make_options
+    from .convert import convert_many, make_options
     from .scan import expand
 
     if args.serum_root and not Path(args.serum_root).is_dir():
@@ -78,7 +78,7 @@ def cmd_convert(args, out):
     claimed: set[str] = set()
     items = []
     for i, f in enumerate(files, 1):
-        items.append(convert_one(f, out_dir, claimed, options, cache))
+        items.extend(convert_many(f, out_dir, claimed, options, cache))
         out.progress(i, len(files), str(f))
     out.result({"items": items})
 
