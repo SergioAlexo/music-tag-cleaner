@@ -21,6 +21,7 @@ import type { ActionCtx, ActionRegistry, JsonSchema } from "./actions";
 import { NO_PARAMS } from "./actions";
 import type { FacetPick } from "./facets";
 import { BACKGROUNDS, STYLES, normalizeOutputSettings } from "./lyricsOutput";
+import { NEEDS_PRESETS_PLUGIN } from "./presets";
 import { closeLyricsOutput, lyricsOutputIsOpen, openLyricsOutput } from "./lyricsOutputCtl";
 
 export const PAGES = ["library", "duplicates", "playlists", "ytmusic", "components", "plugins", "settings", "logs"] as const;
@@ -35,6 +36,9 @@ export interface AppEnv {
   columns: { id: string; label: string }[];
   savePatch: (patch: Partial<Settings>) => void;
   notify: ActionCtx["notify"];
+
+  /** True when an enabled, approved plugin declares `requires.engines` with `presetforge`. */
+  presetsPluginActive: () => boolean;
 
   files: AudioFile[];
   selectedPaths: string[];
@@ -91,6 +95,10 @@ export interface AppEnv {
     }) => Promise<unknown> | void;
     openConvert: () => void;
     openStems: () => Promise<unknown> | void;
+    /** Opens the Presets dialog; `available` is false when no enabled plugin requires the presetforge engine. */
+    openPresets: (opts: { folder?: string; available: boolean }) => void;
+    /** Asks the person to confirm writing converted presets (every call). */
+    confirmPresetsApply: (outputDir: string, count: number | null) => Promise<boolean>;
     openOrganize: (paths: string[]) => void;
     openFindArtwork: (paths: string[]) => void;
     openJunkArt: () => void;
@@ -783,6 +791,98 @@ export function registerAppActions(reg: ActionRegistry, get: () => AppEnv): void
     run: async (p: { paths: string[] }) => {
       await withSelection(p.paths, () => env().h.openStems());
       return { dialogOpened: true };
+    },
+  });
+
+  // ---- synth presets (Preset Translator plugin + presetforge engine) ----------
+  // Thin wrappers over the Rust commands; every action except presets.open needs
+  // the plugin that declares the engine, so the app stays inert without it.
+  const presetsGate = () => {
+    if (!env().presetsPluginActive()) throw new Error(NEEDS_PRESETS_PLUGIN);
+  };
+
+  reg.register({
+    id: "presets.open",
+    title: "Open Synth presets dialog",
+    description: "Opens the Presets dialog (scan, convert to Vital, verify, apply), optionally on a folder. Needs the Preset Translator plugin.",
+    params: obj({ folder: str("Folder to scan right away") }),
+    run: (p: { folder?: string }) => {
+      env().h.openPresets({ folder: p.folder, available: env().presetsPluginActive() });
+      return { dialogOpened: true };
+    },
+  });
+
+  reg.register({
+    id: "presets.scan",
+    title: "Scan for synth presets",
+    description: "Lists preset files (Serum, Serum 2, Vital) under the given files/folders: synth, name and whether they can be converted. Changes nothing.",
+    params: obj({ paths: paths("Preset files or folders") }, ["paths"]),
+    readOnly: true,
+    run: (p: { paths: string[] }) => {
+      presetsGate();
+      return invoke("presets_scan", { paths: p.paths });
+    },
+  });
+
+  reg.register({
+    id: "presets.convert",
+    title: "Convert presets to Vital (staged)",
+    description:
+      "Converts presets to .vital into a temporary staging area and returns a batchId with a per-preset report. Nothing reaches your folders until presets.apply is confirmed.",
+    params: obj(
+      {
+        paths: paths("Preset files or folders"),
+        serumRoot: str("Serum data folder (for wavetables)"),
+        maxFrames: { type: "number", minimum: 1, maximum: 256, description: "Max wavetable frames" },
+      },
+      ["paths"],
+    ),
+    run: (p: { paths: string[]; serumRoot?: string; maxFrames?: number }) => {
+      presetsGate();
+      return invoke("presets_convert", { paths: p.paths, serumRoot: p.serumRoot, maxFrames: p.maxFrames });
+    },
+  });
+
+  reg.register({
+    id: "presets.verify",
+    title: "Verify converted presets",
+    description: "Renders each converted preset of a batch and reports level, silence, clipping and NaN. Changes nothing.",
+    params: obj({ batchId: str() }, ["batchId"]),
+    readOnly: true,
+    run: (p: { batchId: string }) => {
+      presetsGate();
+      return invoke("presets_verify", { batchId: p.batchId });
+    },
+  });
+
+  reg.register({
+    id: "presets.apply",
+    title: "Write converted presets to a folder",
+    description:
+      "Copies a staged batch into outputDir (never overwrites: name clashes get ' (2)'). Always asks the person to confirm. include limits it to those source files.",
+    params: obj(
+      { batchId: str(), outputDir: str("Existing folder to write into"), include: { type: "array", items: { type: "string" }, description: "Source paths to include (default all)" } },
+      ["batchId", "outputDir"],
+    ),
+    dangerous: true,
+    confirmsItself: true,
+    run: async (p: { batchId: string; outputDir: string; include?: string[] }) => {
+      presetsGate();
+      if (!(await env().h.confirmPresetsApply(p.outputDir, p.include ? p.include.length : null)))
+        throw new Error("Writing presets was not confirmed");
+      return invoke("presets_apply", { batchId: p.batchId, outputDir: p.outputDir, include: p.include });
+    },
+  });
+
+  reg.register({
+    id: "presets.report",
+    title: "Get a preset conversion report",
+    description: "Per-preset report of a batch: exact, approximated and dropped fields.",
+    params: obj({ batchId: str() }, ["batchId"]),
+    readOnly: true,
+    run: (p: { batchId: string }) => {
+      presetsGate();
+      return invoke("presets_report", { batchId: p.batchId });
     },
   });
 
