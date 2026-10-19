@@ -109,43 +109,127 @@ The owner's rules for this feature (same spirit as the rest of the app):
 
 ## 2. How it fits Music Tag Cleaner
 
-**An optional add-on**, installed from the Components page the same way as
-yt-dlp / FFmpeg / Demucs / Ollama (`src/pages/ComponentsPage.tsx`,
-`src-tauri/src/commands/components.rs`). The tag cleaner stays the same for anyone
-who doesn't install it.
+*Reworked 2026-10-19 for the plugin SDK (v0.19, `PLUGINS.md`, `plugins/sdk.d.ts`,
+`src/plugins/*`). It replaces the earlier "Components page add-on" design.*
+
+**The person gets it as a plugin:** a free **"Preset Translator"** entry in
+Plugins → Store. They install it, review its permissions and code in the usual
+dialog, and it appears. The tag cleaner stays the same for anyone who doesn't
+install it.
+
+### 2.1 Why the plugin can't be the whole thing
+The v1 SDK is deliberately locked down, and the translator needs things it forbids:
+
+| Translator needs | SDK v1 allows | Consequence |
+|---|---|---|
+| Read preset files, wavetables, Serum's `Tables/` | No file access; plugins see tracks only via `read` actions | Preset I/O must be a **host action** |
+| Run the Python engine (serum2vital, vita) | Sandboxed iframe + Worker: no process spawn, `script.run` never reachable | The engine is a **host-managed binary** |
+| Ship tens of MB of engine | Store zip: manifest + one script only, 512 KB per file, other files ignored | The engine is **downloaded by the host**, not inside the plugin zip |
+| A preset list with preview/report | Buttons, context menu, columns on the *track* table, notify/confirm | The list is a **host dialog** opened by an action, like `convert.open` / `stems.open` |
+| Write `.vital` files | Write permissions cover tags, artwork and moving audio files only | Needs a **new, narrow permission** |
+
+So the design has three layers. Each one is a small, reviewable change.
 
 ```
-MusicTagCleaner (Tauri)                         presetforge engine (Python, GPL-3)
-┌──────────────────────────────┐   JSON over    ┌───────────────────────────────────┐
-│ Presets page (new sidebar    │   stdin/stdout │ readers/  serum1 serum2 surge     │
-│  entry, only when installed) │ ─────────────▶ │           uhe dexed sylenth vital │
-│ - folder/file pick, scan     │                │ ir/       Universal Patch Model   │
-│ - preview table + report     │ ◀───────────── │ writers/  vital (+ later: serum2, │
-│ - Convert / Verify & Fix /   │  progress      │           surge)                  │
-│   Prompt → Preset            │  events        │ verify/   render (vita, DawDreamer│
-│ commands/presets.rs (spawn,  │                │           pedalboard) + metrics   │
-│  find_presetforge(), stream) │                │ fix/      lint rules + optimizer  │
-└──────────────────────────────┘                │ prompt/   schema, compiler, RAG   │
-                                                └───────────────────────────────────┘
+┌─ Plugin "preset-translator" (store zip, ~5 KB, free) ─────────────────────────┐
+│ manifest: permissions ["presets", "ui.control"], requires {engine: presetforge}│
+│ buttons:  "Presets" → presets.open                                            │
+│ actions:  convertFolder, makeFromPrompt (thin wrappers, also MCP-callable as  │
+│           plugin.preset-translator.*)                                         │
+│ settings: output folder, Serum data folder, max frames, auto-verify           │
+└──────────────────────────────┬────────────────────────────────────────────────┘
+                               │ mtc.call("presets.*")  (permission-checked)
+┌─ Host (MTC core) ────────────▼────────────────────────────────────────────────┐
+│ src/lib/appActions.ts  presets.open / scan / convert / verify / generate /    │
+│                        edit / report     → also visible to AI over mtc-mcp    │
+│ src/plugins/permissions.ts  "presets.*" → "presets"                          │
+│ commands/presets.rs   spawn engine, stream JSON lines, enforce write rules   │
+│ commands/engines.rs   install/verify/update engines (reuses plugin_store.rs  │
+│                       SHA-256 verify + zip unpack)                           │
+│ PresetsDialog.tsx     list + preview + report (opened by presets.open)       │
+└──────────────────────────────┬────────────────────────────────────────────────┘
+                               │ stdin/stdout JSON lines, no port
+┌─ Engine "presetforge" (own repo, GPL-3, PyInstaller one-folder) ─────────────▼┐
+│ readers/ ir/ (UPM) writers/ verify/ fix/ prompt/   (§3–§4)                    │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+### 2.2 Host changes (MTC core, one PR)
+1. **Actions** in `src/lib/appActions.ts`, implemented in `commands/presets.rs`:
+
+   | Action | Does | Writes? |
+   |---|---|---|
+   | `presets.open` | Opens the Presets dialog, optionally on a folder | no |
+   | `presets.scan` | Lists preset files under a folder: format, synth, name, status | no |
+   | `presets.convert` | Converts to `.vital` and returns a **pending** result (files staged in a temp dir, plus a per-preset report). Nothing lands in the output folder yet. | staging only |
+   | `presets.verify` | Renders and returns match scores and fix proposals (§3.6) | no |
+   | `presets.generate` | Prompt → staged `.vital` (§4), using the host AI backends | staging only |
+   | `presets.edit` | Edit ops on an existing Vital preset → staged result | staging only |
+   | `presets.apply` | Moves staged results into the output folder after the person confirms | yes |
+   | `presets.report` | Returns the report JSON for a staged or applied batch | no |
+
+   The split between staging and `presets.apply` mirrors `changes.get` → `changes.apply`
+   for tags: **AI assistants and plugins can propose, but only a confirm writes.**
+2. **Permission `presets`** in `src/plugins/permissions.ts` (`presets.*` → `presets`) and
+   in the PLUGINS.md table. It may read preset/wavetable files the person picked and
+   write **only** into the configured output folder: never over a source file, never
+   outside that folder. This is enforced in Rust, not trusted from the caller.
+   `presets.apply` additionally asks every time, like `files.delete`.
+3. **Engines: a small SDK extension, `requires.engines`.** The manifest declares, e.g.,
+   `"requires": {"engines": [{"id": "presetforge", "version": ">=0.1"}]}`. The host keeps
+   an **allowlisted engine index** (id → https URL + SHA-256 + size, compiled into the
+   app or signed). Plugins can never supply their own URL. The review dialog shows
+   "This plugin needs the presetforge engine (≈N MB) from <host>". Install, verify and
+   update reuse `plugin_store.rs` (SHA-256 check, zip unpack). Binaries live in
+   `<app data>/engines/<id>/<version>/`. This is generic, so future heavy plugins (stems
+   models, etc.) can reuse it. If the SDK extension is rejected, the fallback is a
+   Components-page entry, which was the old design.
+4. **`PresetsDialog.tsx`**: a host-rendered dialog following the app's rules (virtualized
+   list, selecting separate from ticking, preview before write, buttons and no drag
+   gestures). Columns: name, source synth, status ✓/≈/✗, match score, size. A
+   report drawer lists exact / approximated / dropped. It is opened only through
+   `presets.open`, so it is invisible unless something calls it.
+5. **Settings** live in the plugin's `contributes.settings`, not the app's
+   settings blob, so no `CURRENT_SETTINGS_VERSION` bump is needed. The plugin reads
+   them with `mtc.settings.get` and passes them as `presets.*` parameters; the dialog
+   gets them the same way through `presets.open`. Settings: output
+   folder, Vital user folder (default `Documents\Vital\User\Presets`), Serum data
+   folder, max frames, auto-verify.
+6. **Without the plugin**, `presets.*` actions still exist (so MCP can discover them)
+   but return "Install the Preset Translator plugin" and do nothing. One switch,
+   no dead UI.
+
+### 2.3 The plugin itself
+- **No logic of its own**, by design. It is the opt-in switch, the button, the settings,
+  and two convenience actions:
+  - `convertFolder({folder})`: `presets.scan` → `presets.convert` → `presets.open` on the
+    result.
+  - `makeFromPrompt({prompt, base?})`: `presets.generate` → `presets.open`.
+- **Free, as the store requires.** Paid parts (cloud AI for Prompt → Preset) are gated
+  host-side by the v1.0 entitlements, never by plugin code.
+- Lives in `plugins-examples/preset-translator/` for development, then publishes to the
+  store index (zip + SHA-256 as in PLUGINS.md).
+
+### 2.4 What this unlocks for free
+- **AI control:** `presets.*` are registry actions, so Claude Code and other MCP clients
+  can call them through `mtc-mcp`. For example: "make me 5 reese basses and convert my
+  Downloads/Serum folder". Prompt → Preset gets a second front end at no extra cost.
+- **User macros:** "New button with AI" can build buttons on top of `presets.*`, such as
+  "convert this folder with 16 frames".
+
+### 2.5 Engine packaging (unchanged in substance)
 - **The engine lives in its own repo** (working name `presetforge`). It is Python
   because serum2vital, vita, DawDreamer and pedalboard are all Python. It also works
   as a standalone CLI, which is how it gets tested.
-- **Packaging:** the core (read + write) is a PyInstaller one-folder exe that the
-  Components page downloads, so no Python install is needed. Verify & Fix and
-  rendering use the user's own Python plus `pip install presetforge[render]`, the
-  same model as Demucs (`python -m demucs`). Spike S4 checks whether that is needed.
+- **Core plus render in one build:** the PyInstaller one-folder build includes `vita`,
+  because S4 showed vita installs and renders headless on Windows/Python 3.13, so
+  Verify & Fix of the *Vital side* needs no Python on the person's machine.
+  Rendering the *source* synth (DawDreamer/pedalboard plus the person's own plugins)
+  is an optional second engine, `presetforge-host`, listed under the same
+  `requires.engines` mechanism.
 - **Protocol:** `presetforge <cmd> --json` emits one JSON object per line, as
-  `{"event":"progress"|"result"|"warning"|"error", ...}`. Rust relays progress as Tauri
-  events (same pattern as `emit_progress` in components.rs). No HTTP server and no port.
-- **UI follows the app's existing rules:** list virtualized for big preset folders,
-  selecting vs. ticking kept separate, preview before write, buttons and no drag
-  gestures (CLAUDE.md hard-won rules).
-- **Settings** (bump `CURRENT_SETTINGS_VERSION`, add a migration): Vital user-preset
-  folder (default `Documents\Vital\User\Presets`), Serum data folder (for wavetables),
-  output folder, max wavetable frames (16/32/64), and which plugins are installed
-  for verification.
+  `{"event":"progress"|"result"|"warning"|"error", ...}`. `presets.rs` relays progress
+  as Tauri events to the dialog. No HTTP server and no port.
 - **Licensing:** the app, serum2vital, vita and Surge are all GPL-3, so they are
   compatible. Pricing tier (Pro vs Studio) is an open question (§7).
 
@@ -356,7 +440,7 @@ one-to-one:
 | Phase | Deliverable | Done when |
 |---|---|---|
 | **S — Spikes** (§6.1) | Answers to the unknowns | Each spike has a written yes/no and numbers |
-| **1 — Serum → Vital in the app** | Engine repo with serum2vital wrapped; Vital reader/writer; CLI JSON protocol; Components entry; Presets page (scan → preview → convert → report) | The owner converts a real Serum folder; every output loads in Vital; report is shown |
+| **1 — Serum → Vital in the app** | Engine repo with serum2vital wrapped; Vital reader/writer; CLI JSON protocol; host `presets.*` actions + `presets` permission + `requires.engines` + Presets dialog (§2.2); the `preset-translator` plugin (§2.3) | The owner converts a real Serum folder; every output loads in Vital; report is shown |
 | **2 — More inputs** | Surge XT, u-he (Diva + Hive first), Dexed; calibration tool + fixtures | Each synth has fixture tests passing in CI |
 | **3 — Verify & Fix** | Render + metrics + match score column; static fixes; optimizer with approve-to-keep | Median score on the owner's set goes up and no preset gets worse |
 | **4 — Prompt → Preset** | PatchSpec schema, compiler, procedural wavetables, Create/Edit/Variations, all AI backends incl. Manual | 20 test prompts produce loadable presets the owner rates as usable |
@@ -405,8 +489,12 @@ one-to-one:
 ---
 
 ## 7. Open questions for the owner
-1. **Which synths do you own and have presets for?** That sets the reader order
-   after Serum. Tier C only works for synths installed on the machine.
+1. ~~Which synths do you own?~~ Answered: none, but support them all (§8.12–8.13).
+6. **SDK extension `requires.engines` (§2.2.3):** OK to add it to plugin API v1 as an
+   optional field, or should it wait for an `apiVersion: 2`? The alternative is an
+   engine entry on the Components page.
+7. **Store listing:** publish Preset Translator in the official store index, or keep
+   it local-install only until phase 3?
 2. **Engine as a separate public GPL repo** (`presetforge`) that the app downloads,
    or a folder inside this repo? A separate repo is recommended; it can also be a
    standalone CLI.
