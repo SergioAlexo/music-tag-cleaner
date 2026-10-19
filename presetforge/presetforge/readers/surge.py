@@ -287,7 +287,7 @@ def to_patch(sf: SurgeFile, source_file: str = "") -> Patch:
     if P.f(pre + "feedback") != 0:
         rep.drop("filter feedback", "filter feedback has no Vital equivalent")
     if not p.oscillators:
-        raise SurgeError("no audible oscillator in the active scene")
+        raise SurgeError("no audible oscillator in the active scene (noise-only and ring-mod-only patches are not supported)")
 
     # ---- filters
     cfg = P.i(pre + "fb_config")

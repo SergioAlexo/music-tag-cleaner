@@ -514,3 +514,21 @@ def patches_from_file(path: str) -> tuple[list[Patch], list[str]]:
         data = fh.read()
     voices, warnings = parse_syx(data)
     return [to_patch(v, path) for v in voices], warnings
+
+
+def patches_from_file_lenient(path: str) -> tuple[list[Patch], list[str], list[str | None]]:
+    """Like patches_from_file but a voice that cannot be converted gets an error string instead of
+    aborting the bank. Returns (patches, warnings, errors); failed voices have a placeholder patch."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    voices, warnings = parse_syx(data)
+    patches: list[Patch] = []
+    errors: list[str | None] = []
+    for i, v in enumerate(voices, 1):
+        try:
+            patches.append(to_patch(v, path))
+            errors.append(None)
+        except Exception as exc:   # one bad voice must not lose the bank
+            patches.append(Patch())
+            errors.append(f"voice {i} ({v.name}): {type(exc).__name__}: {exc}")
+    return patches, warnings, errors

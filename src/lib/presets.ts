@@ -3,7 +3,7 @@
  * return them (PLAN-preset-translator.md §10), plus small pure helpers shared by
  * the Presets dialog and the `presets.*` actions.
  */
-export type PresetSynth = "serum1" | "serum2" | "vital" | "unknown";
+export type PresetSynth = "serum1" | "serum2" | "surge" | "dexed" | "vital" | "unknown";
 
 export interface ScanItem {
   path: string;
@@ -45,6 +45,8 @@ export interface ApplyResult {
 export const SYNTH_LABEL: Record<PresetSynth, string> = {
   serum1: "Serum",
   serum2: "Serum 2",
+  surge: "Surge XT",
+  dexed: "Dexed / DX7",
   vital: "Vital",
   unknown: "Unknown",
 };

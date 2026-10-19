@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .detect import detect
 
-PRESET_EXTENSIONS = {".fxp", ".serumpreset", ".vital"}
+PRESET_EXTENSIONS = {".fxp", ".serumpreset", ".vital", ".syx"}
 
 
 def expand(paths: list[str]) -> tuple[list[Path], list[str]]:

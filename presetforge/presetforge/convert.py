@@ -72,6 +72,62 @@ def convert_one(source: Path, out_dir: Path, claimed: set[str], options, cache: 
     return item
 
 
+def _convert_foreign(source: Path, d, out_dir: Path, claimed: set[str]) -> list[dict]:
+    """Surge / Dexed: read to UPM patches, write each through the generic Vital writer."""
+    from .vital_writer import write_vital
+
+    items: list[dict] = []
+    base = {"source": str(source), "status": "failed", "report": {"exact": 0, "approximated": [], "dropped": []}}
+    try:
+        if d.synth == "surge":
+            from .readers import surge
+            patches, warnings = surge.patches_from_file(str(source))
+            errors: list[str | None] = [None] * len(patches)
+        else:
+            from .readers import dexed
+            patches, warnings, errors = dexed.patches_from_file_lenient(str(source))
+    except Exception as exc:
+        item = dict(base, error=f"{type(exc).__name__}: {exc}")
+        item["report"] = dict(base["report"])
+        return [item]
+    bank = len(patches) > 1
+    for i, (patch, err) in enumerate(zip(patches, errors), 1):
+        item = {"source": str(source), "status": "failed",
+                "report": {"exact": 0, "approximated": [], "dropped": []}}
+        if bank:
+            item["voice"] = i
+        if err is not None:
+            item["error"] = err
+            items.append(item)
+            continue
+        try:
+            for w in warnings:
+                patch.report.approx("file", w)
+            target = unique_output(out_dir, patch.meta.name or source.stem, claimed)
+            write_vital(patch, target)
+            item["output"] = str(target)
+            item["report"] = patch.report.as_item()
+            item["status"] = patch.report.status
+            if bank:
+                item["name"] = patch.meta.name
+        except Exception as exc:
+            item["error"] = f"{type(exc).__name__}: {exc}"
+        items.append(item)
+    return items
+
+
+def convert_many(source: Path, out_dir: Path, claimed: set[str], options, cache: dict) -> list[dict]:
+    """One ConvertItem per output preset (a DX7 bank gives up to 32 items sharing `source`)."""
+    try:
+        d = detect(source)
+    except Exception as exc:
+        return [{"source": str(source), "status": "failed", "error": f"{type(exc).__name__}: {exc}",
+                 "report": {"exact": 0, "approximated": [], "dropped": []}}]
+    if d.synth in ("surge", "dexed"):
+        return _convert_foreign(source, d, out_dir, claimed)
+    return [convert_one(source, out_dir, claimed, options, cache)]
+
+
 def make_options(serum_root: str | None, max_frames: int | None):
     from serum2vital.convert import Options
     from serum2vital.wavetables import DEFAULT_FRAME_LIMIT
