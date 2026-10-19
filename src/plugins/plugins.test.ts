@@ -425,4 +425,33 @@ describe("bundled example plugins (plugins-examples/)", () => {
     await flush();
     expect(await inst.computeColumn("range", rows)).toEqual(["125-129", ""]);
   });
+  it("preset-translator converts a folder through presets.* and defers prompts", async () => {
+    const t = makeEnv();
+    const stub = (id: string, result: unknown, readOnly = false) =>
+      t.registry.register({
+        id,
+        title: id,
+        params: { type: "object", properties: {}, additionalProperties: true },
+        readOnly,
+        run: (params) => {
+          t.calls.push({ id, params });
+          return result;
+        },
+      });
+    stub("presets.open", { dialogOpened: true });
+    stub("presets.scan", { items: [{ path: "a.SerumPreset", supported: true }, { path: "b.fxp", supported: false }] }, true);
+    stub("presets.convert", { batchId: "b1", items: [] });
+    const { manager, backend } = makeManager(t);
+    const { manifest, code } = load("preset-translator");
+    backend.files.set("preset-translator", { id: "preset-translator", manifest, code });
+    await manager.refresh();
+    await manager.approveInstalled("preset-translator");
+    await flush();
+    const ctx = { caller: "ui" as const, notify: () => {} };
+    const res = await t.registry.run("plugin.presetTranslator.convertFolder", { folder: "D:/p" }, ctx);
+    expect(res).toMatchObject({ scanned: 2, converted: 1, batchId: "b1" });
+    expect(t.calls.map((c) => c.id)).toEqual(["presets.scan", "presets.convert", "presets.open"]);
+    expect(t.calls[1].params).toEqual({ paths: ["a.SerumPreset"], maxFrames: 64 });
+    await expect(t.registry.run("plugin.presetTranslator.makeFromPrompt", {}, ctx)).rejects.toThrow(/later version/);
+  });
 });
