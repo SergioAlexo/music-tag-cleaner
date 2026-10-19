@@ -13,6 +13,7 @@ pub(crate) mod download;
 pub mod dj_playlists;
 pub mod dj_sync;
 pub mod duplicates;
+pub mod engines;
 pub mod ffmpeg;
 pub mod files;
 pub mod library_index;

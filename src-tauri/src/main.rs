@@ -169,6 +169,8 @@ fn main() {
             commands::plugins::plugins_http,
             commands::plugin_store::plugin_store_index,
             commands::plugin_store::plugin_store_package,
+            commands::engines::engines_status,
+            commands::engines::engine_install,
             commands::files::scan_folder,
             commands::files::list_files,
             commands::files::import_paths,
