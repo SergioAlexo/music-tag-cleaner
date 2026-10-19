@@ -14,7 +14,7 @@
 #>
 param(
   [switch]$Install,
-  [string]$InstallDir = "$env:LOCALAPPDATA\MusicTagCleaner",
+  [string]$InstallDir = "$env:LOCALAPPDATA\Vatra Wave",
   [string]$Subject = "CN=MusicTagCleaner Dev"
 )
 $ErrorActionPreference = 'Stop'

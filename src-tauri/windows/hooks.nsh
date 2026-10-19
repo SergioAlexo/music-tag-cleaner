@@ -40,7 +40,101 @@
   !insertmacro ${MACRO} ".aif"
 !macroend
 
+; One-time move from the "MusicTagCleaner" productName (v0.19.1 and earlier).
+;
+; productName names the install dir, the uninstall key, MANUPRODUCTKEY and the
+; shortcuts, so a "Vatra Wave" installer (or the updater running it with
+; /UPDATE) finds no previous install and would put a second copy in
+; $LOCALAPPDATA\Vatra Wave beside the old one. PREINSTALL runs before any file
+; is copied or association written: it closes the old app, runs the old
+; uninstaller silently in place, then removes what that left. /UPDATE keeps
+; the old uninstaller from unpinning the taskbar and clearing the jump list of
+; the AppUserModelID, which is the bundle identifier and so shared with the
+; new install. App data lives under the identifier too and is never touched.
+; POSTINSTALL then recreates the shortcuts the old install had (an /UPDATE run
+; of the template creates none) and repoints a taskbar pin at the new exe.
+!define MTC_OLD_NAME "MusicTagCleaner"
+!define MTC_OLD_UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${MTC_OLD_NAME}"
+!define MTC_OLD_MANUPRODUCTKEY "${MANUKEY}\${MTC_OLD_NAME}"
+!define MTC_TASKBAR_PINS "$APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar"
+
+Var MtcOldDir
+Var MtcOldExe
+Var MtcHadStartLnk
+Var MtcHadDesktopLnk
+
+!macro MTC_MIGRATE_OLD_INSTALL
+  StrCpy $MtcHadStartLnk 0
+  StrCpy $MtcHadDesktopLnk 0
+  ReadRegStr $MtcOldDir SHCTX "${MTC_OLD_MANUPRODUCTKEY}" ""
+  ${If} $MtcOldDir == ""
+    ; InstallLocation is written quoted.
+    ReadRegStr $MtcOldDir SHCTX "${MTC_OLD_UNINSTKEY}" "InstallLocation"
+    StrCpy $0 $MtcOldDir 1
+    ${If} $0 == '"'
+      StrCpy $MtcOldDir $MtcOldDir -1 1
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $MtcOldDir != ""
+    ReadRegStr $MtcOldExe SHCTX "${MTC_OLD_UNINSTKEY}" "MainBinaryName"
+    ${IfThen} $MtcOldExe == "" ${|} StrCpy $MtcOldExe "${MAINBINARYNAME}.exe" ${|}
+    StrCpy $MtcOldExe "$MtcOldDir\$MtcOldExe"
+
+    !insertmacro IsShortcutTarget "$SMPROGRAMS\${MTC_OLD_NAME}.lnk" "$MtcOldExe"
+    Pop $MtcHadStartLnk
+    !insertmacro IsShortcutTarget "$DESKTOP\${MTC_OLD_NAME}.lnk" "$MtcOldExe"
+    Pop $MtcHadDesktopLnk
+
+    !insertmacro CheckIfAppIsRunning "$MtcOldExe" "${PRODUCTNAME}"
+
+    ${If} ${FileExists} "$MtcOldDir\uninstall.exe"
+      DetailPrint "Removing the previous ${MTC_OLD_NAME} install in $MtcOldDir"
+      ExecWait '"$MtcOldDir\uninstall.exe" /S /UPDATE _?=$MtcOldDir'
+      ; Run in place (_?=), the uninstaller can't delete itself or its folder.
+      Delete "$MtcOldDir\uninstall.exe"
+      RMDir "$MtcOldDir"
+    ${EndIf}
+
+    ${If} $MtcHadStartLnk = 1
+      Delete "$SMPROGRAMS\${MTC_OLD_NAME}.lnk"
+    ${EndIf}
+    ${If} $MtcHadDesktopLnk = 1
+      Delete "$DESKTOP\${MTC_OLD_NAME}.lnk"
+    ${EndIf}
+    ; The uninstaller drops its key itself; this covers a missing uninstall.exe.
+    DeleteRegKey SHCTX "${MTC_OLD_UNINSTKEY}"
+    DeleteRegKey SHCTX "${MTC_OLD_MANUPRODUCTKEY}"
+    DeleteRegKey HKCU "${MTC_OLD_MANUPRODUCTKEY}"
+  ${EndIf}
+!macroend
+
+!macro MTC_FINISH_MIGRATION
+  ${If} $MtcOldDir != ""
+    ${If} $MtcHadStartLnk = 1
+      CreateShortcut "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+      !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+    ${EndIf}
+    ${If} $MtcHadDesktopLnk = 1
+      CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+      !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
+    ${EndIf}
+    ; Renaming a pin's .lnk would orphan it, so only its target moves; the pin
+    ; keeps its old tooltip until it is unpinned and pinned again.
+    !insertmacro IsShortcutTarget "${MTC_TASKBAR_PINS}\${MTC_OLD_NAME}.lnk" "$MtcOldExe"
+    Pop $0
+    ${If} $0 = 1
+      !insertmacro SetShortcutTarget "${MTC_TASKBAR_PINS}\${MTC_OLD_NAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+!macro NSIS_HOOK_PREINSTALL
+  !insertmacro MTC_MIGRATE_OLD_INSTALL
+!macroend
+
 !macro NSIS_HOOK_POSTINSTALL
+  !insertmacro MTC_FINISH_MIGRATION
   ; With the Windows 11 main-menu extension installed (its DLL sits in
   ; $INSTDIR), that entry already shows under "Show more options" too, so the
   ; classic verb would list twice there. OpenWithProgids is still wanted.

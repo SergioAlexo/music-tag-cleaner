@@ -2563,6 +2563,90 @@ name.
 Verified: `npm run build`, vitest 369 passed, `cargo check` on the app, mcp
 and shell-ext. The UI was not opened (needs `tauri dev`).
 
+### 67. `productName` is Vatra Wave, with a one-time install migration — unreleased
+
+`productName` moved from `MusicTagCleaner` to **Vatra Wave**, so the install
+folder (`%LOCALAPPDATA%\Vatra Wave`), Apps list, Start menu, taskbar and exe
+metadata all show the new name. Tauri's NSIS template derives the install
+dir, uninstall key, `MANUPRODUCTKEY` and shortcut names from `productName`,
+so a plain change made the updater install a second copy beside the old one.
+
+Options weighed: (a) hooks that remove the old install, (b) an explicit
+`mainBinaryName` with the old install dir, (c) keep `productName` and rename
+only the shortcuts and `DisplayName` in hooks. (b) does nothing here: the exe
+is already named after the Cargo package, not `productName`, and NSIS has no
+install-dir setting, so keeping the old folder means overriding `$INSTDIR`
+from a hook. (c) keeps the wrong folder and fights the template, which would
+recreate or delete `MusicTagCleaner.lnk` on every update. **(a) was chosen.**
+
+- **`windows/hooks.nsh` `MTC_MIGRATE_OLD_INSTALL` (PREINSTALL).** Finds the
+  old install from `HKCU\Software\sopas\MusicTagCleaner` (fallback: the old
+  uninstall key's `InstallLocation`), notes whether its Start menu and
+  desktop shortcuts exist, closes the old exe, and runs the old
+  `uninstall.exe /S /UPDATE _?=<dir>`. That removes its files, `mtc-mcp.exe`,
+  file associations, Explorer verbs, sparse package, shell-ext DLL and
+  uninstall key. `/UPDATE` stops it unpinning the taskbar or clearing the
+  jump list of the AUMID, which is the identifier and so shared with the new
+  install. The hook then deletes `uninstall.exe`, the empty folder, the old
+  `.lnk` files and both old keys. All of this runs before any file is copied
+  or association written.
+- **`MTC_FINISH_MIGRATION` (POSTINSTALL).** An `/UPDATE` run of the template
+  creates no shortcuts, so this recreates `Vatra Wave.lnk` (Start menu, and
+  desktop if there was one) with the AUMID. It repoints a taskbar pin's
+  `.lnk` at the new exe. Renaming the pin would orphan it, so its tooltip
+  stays "MusicTagCleaner" until it is re-pinned.
+- **MSI:** `bundle.windows.wix.upgradeCode` is pinned to
+  `ac9ef9c9-…-fdc3de0f2399`, the value `tauri inspect wix-upgrade-code` gave
+  for the old name, so a major upgrade still removes the old product.
+- **macOS:** the updater swaps the new bundle into the existing path, so an
+  updated install keeps the folder name `MusicTagCleaner.app` while Dock,
+  menu bar and Info.plist say Vatra Wave. Fresh installs get
+  `Vatra Wave.app`. No duplicate is created, so no migration is needed.
+- **Linux:** the deb/rpm package name is the kebab-cased `productName`
+  (`music-tag-cleaner` → `vatra-wave`), and both ship
+  `/usr/bin/music-tag-cleaner`. The deb declares `Conflicts`/`Replaces` and
+  the rpm declares `Conflicts`/`Obsoletes` on `music-tag-cleaner`, so the new
+  package replaces the old one instead of failing on the shared file. An
+  AppImage updates in place.
+- `windows/sparse/build.ps1` `-InstallDir` now defaults to
+  `%LOCALAPPDATA%\Vatra Wave`. The old uninstaller unregisters the sparse
+  package, so after the upgrade re-run `build.ps1 -Install` to get the
+  Win11 main-menu entry back. Until then the classic verb shows.
+
+**Kept:** `identifier`, `mainBinaryName` (now explicit, `music-tag-cleaner`),
+the ProgID and registry key names, and the sparse package identity.
+
+**Not handled:** MCP clients set up with the old `mtc-mcp.exe` path
+(`claude mcp add …`, `claude_desktop_config.json`) must be re-added from
+Settings → AI control, which shows the new path. Installer file names change
+to `Vatra Wave_<ver>_…`. GitHub stores the space as a dot. On the first
+release, check that the URLs in `latest.json` match the uploaded asset
+names. The endpoint itself does not change.
+
+Verified on Windows 11 with local builds: an old-name 0.19.1 NSIS installer
+from the parent commit and the new one. MSI `UpgradeCode` in the generated
+`main.wxs` is the pinned GUID.
+- **Updater path** (`setup.exe /P /UPDATE /R` with the old app running): the
+  old app is closed, and `%LOCALAPPDATA%\MusicTagCleaner` and its uninstall
+  key and `Software\sopas\MusicTagCleaner` are gone. There is one Apps entry
+  ("Vatra Wave", `MainBinaryName` `music-tag-cleaner.exe`), one Start entry
+  (`Get-StartApps`: Vatra Wave = `com.sopas.musictagcleaner`), and one
+  Start-menu and one desktop `Vatra Wave.lnk` pointing at the new dir.
+  Explorer verbs and the `MusicTagCleaner Audio` ProgID point at the new exe
+  and read "Open with Vatra Wave". No `HKCU\Software\Classes` value still
+  names the old dir. Invoking the verb on a `.wav` started the new exe with
+  that file. The relaunched window is titled Vatra Wave, and exe
+  ProductName/FileDescription are Vatra Wave.
+- **Manual path** (`setup.exe /S` over a fresh old install): same end state,
+  and the `%APPDATA%\com.sopas.musictagcleaner` files (settings, library
+  index, snapshot config) were byte-identical before and after. The new app
+  then started on them without rewriting `settings.json`.
+- The new uninstaller (`/S`) removes dir, key, shortcut and verbs and keeps
+  app data.
+- **Not exercised:** a taskbar pin (none on the test PC, and pins cannot be
+  made by script), the sparse package (not registered on the test PC), MSI
+  over an old MSI, and the macOS and Linux bundles (CI only).
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —

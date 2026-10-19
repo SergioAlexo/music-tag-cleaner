@@ -6,13 +6,22 @@ The owner is a DJ (Rekordbox / Serato / Traktor) and often calls this app
 requests mean this one.
 
 ## Name: Vatra Wave, with old technical IDs kept on purpose
-User-visible text says **Vatra Wave**. These stay `MusicTagCleaner` / `musictagcleaner`
-because changing them breaks existing installs: `identifier` (app-data dir, AUMID,
-MCP bridge lookup), `productName` (NSIS install dir, uninstall key, shortcuts — a
-change makes the updater install a second copy beside the old one), the
-`MusicTagCleaner Audio` ProgID and registry key names in `windows/hooks.nsh`, the
-sparse package identity in `windows/sparse/`, the `mtc` playlist-source id, and the
-repo/updater URL. Moving `productName` needs a deliberate install-dir migration.
+User-visible text says **Vatra Wave**, and so does `productName` (ROADMAP item 67):
+the install dir is `%LOCALAPPDATA%\Vatra Wave`, the uninstall key, shortcuts,
+`.app` and exe metadata follow it. The move off "MusicTagCleaner" is a one-time
+migration in `windows/hooks.nsh` (`MTC_MIGRATE_OLD_INSTALL`): it silently runs the
+old uninstaller with `/UPDATE`, deletes the old shortcuts and keys, and recreates the
+shortcuts and taskbar pin target for the new dir. Keep the `MTC_OLD_*` defines and
+that migration for as long as v0.19.x installs may still update. `bundle.windows.wix.upgradeCode`
+is pinned to the GUID derived from the old name so MSI major upgrades still match, and
+the Linux deb/rpm declare they replace the old `music-tag-cleaner` package.
+
+These stay `MusicTagCleaner` / `musictagcleaner` because changing them breaks existing
+installs: `identifier` (app-data dir, AUMID, MCP bridge lookup), `mainBinaryName`
+(set explicitly to `music-tag-cleaner`: the exe that Explorer verbs, pins and
+`mtc-mcp` depend on), the `MusicTagCleaner Audio` ProgID and registry key names in
+`windows/hooks.nsh`, the sparse package identity in `windows/sparse/`, the `mtc`
+playlist-source id, and the repo/updater URL.
 
 ## Stack & commands
 - Tauri 2 desktop app: React + TypeScript + Tailwind (`src/`), Rust (`src-tauri/`).
