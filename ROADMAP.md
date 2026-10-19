@@ -2767,3 +2767,28 @@ must never lock someone out of editing their own files.
   smart-rule encodings (BPM/rating/key/date); Mixxx-follow mode for the lyrics
   output window (design in `F3.md`).
 - (add items here)
+
+### 66. Preset Translator phase 1 (in progress)
+
+Converts Serum / Serum 2 presets to Vital, built as an optional plugin plus a
+separate engine so the base app stays inert without them. Plan and frozen
+contract: `PLAN-preset-translator.md` (§2, §10). Built by parallel agents.
+
+- **Engine** `presetforge/` (Python 3.11+, in this repo for now): CLI with
+  `version`, `scan`, `convert`, `verify`, speaking JSON lines on stdout.
+- **Host** `presets.*` actions (`open`, `scan`, `convert`, `verify`, `apply`,
+  `report`), the `presets` permission, plugin `requires.engines`, the
+  Presets dialog, and Rust commands (`presets.rs`, `engines.rs`) that stage
+  conversions in app data and only copy to the chosen folder on a confirmed
+  Apply (never overwrites). The compiled-in engine index starts empty, so
+  installs come later; dev uses `MTC_PRESETFORGE`.
+- **Plugin** `plugins-examples/preset-translator/`: Presets toolbar button,
+  `convertFolder` action (scan, convert with plugin settings, open dialog),
+  `makeFromPrompt` stub that rejects until Prompt to Preset exists. Dev shim
+  `presetforge/dev/presetforge.cmd`; see PLUGINS.md "Developing the Preset
+  Translator".
+- **Verified:** `npm test` and `npm run build` pass, including the plugin's
+  manifest validation and a registry-level test of `convertFolder`.
+- **Not verified:** the Rust side is compiled only by CI (never built locally
+  here), and the Presets dialog and plugin have not been run in the app yet.
+  No end-to-end conversion has been loaded into Vital by hand.
