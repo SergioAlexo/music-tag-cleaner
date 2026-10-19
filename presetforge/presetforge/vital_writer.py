@@ -62,6 +62,27 @@ def wave_data(shape: str) -> str:
     return base64.b64encode(w.astype("<f4").tobytes()).decode("ascii")
 
 
+def wavetable_components(frames: list, name: str) -> dict:
+    """Vital wavetable 'groups[0].components' payload from arbitrary-length frames (<= 256 kept)."""
+    arr = [np.asarray(f, dtype=np.float64) for f in frames if len(f) >= 2]
+    if len(arr) > 256:
+        keep = np.linspace(0, len(arr) - 1, 256).round().astype(int)
+        arr = [arr[i] for i in keep]
+    out = []
+    n = len(arr)
+    for i, f in enumerate(arr):
+        x_old = np.linspace(0.0, 1.0, len(f), endpoint=False)
+        x_new = np.linspace(0.0, 1.0, WAVE_SIZE, endpoint=False)
+        # periodic linear interpolation
+        r = np.interp(x_new, np.append(x_old, 1.0), np.append(f, f[0]))
+        peak = float(np.abs(r).max()) or 1.0
+        if peak > 1.0:
+            r = r / peak
+        out.append({"position": 0 if n == 1 else int(round(i * 255 / (n - 1))),
+                    "wave_data": base64.b64encode(r.astype("<f4").tobytes()).decode("ascii")})
+    return {"interpolation": 1, "interpolation_style": 1, "keyframes": out, "type": "Wave Source"}
+
+
 def fm_index_to_amount(beta: float) -> float:
     """Phase-modulation index (radians) -> Vital FM depth, by interpolating the measured table."""
     pts = FM_AMOUNT_TO_BETA
@@ -149,6 +170,7 @@ def build_vital(patch: Patch) -> dict:
         S.set(p + "resonance", f.resonance)
         S.set(p + "drive", f.drive_db)
         S.set(p + "keytrack", f.keytrack)
+        S.set(p + "filter_input", 1 if f.after is not None else 0)
 
     # --- oscillators
     oscs = patch.oscillators[:3]
@@ -161,8 +183,13 @@ def build_vital(patch: Patch) -> dict:
     for n, o in enumerate(oscs, 1):
         p = f"osc_{n}_"
         wt = st["wavetables"][n - 1]
-        wt["name"] = o.shape.capitalize()
-        wt["groups"][0]["components"][0]["keyframes"][0]["wave_data"] = wave_data(o.shape)
+        if o.frames:
+            wt["name"] = o.wt_name or "Wavetable"
+            wt["groups"][0]["components"][0] = wavetable_components(o.frames, wt["name"])
+            S.set(p + "wave_frame", max(0.0, min(1.0, o.frame_pos)) * 255.0)
+        else:
+            wt["name"] = o.shape.capitalize()
+            wt["groups"][0]["components"][0]["keyframes"][0]["wave_data"] = wave_data(o.shape)
         S.set(p + "on", 1 if o.on else 0)
         whole = int(round(o.transpose))
         S.set(p + "transpose", whole)
@@ -176,8 +203,10 @@ def build_vital(patch: Patch) -> dict:
         S.set(p + "midi_track", 1 if o.keytrack else 0)
         dest = 4 if o.destination == "direct" else 0
         if o.destination != "direct" and filters:
-            f1 = (n - 1) in filters[0].inputs
-            f2 = len(filters) > 1 and (n - 1) in filters[1].inputs
+            f1 = (n - 1) in filters[0].inputs and filters[0].after is None
+            f2 = len(filters) > 1 and (n - 1) in filters[1].inputs and filters[1].after is None
+            if not f1 and not f2:
+                f1 = True
             dest = 2 if (f1 and f2) else 1 if f2 else 0
         S.set(p + "destination", dest)
         if o.fm_from is not None and o.fm_from < len(oscs) and o.fm_from != n - 1:

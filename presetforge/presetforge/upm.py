@@ -63,6 +63,9 @@ class Osc:
     fm_from: int | None = None       # index into Patch.oscillators of the FM modulator
     fm_index: float = 0.0            # peak phase-modulation index in radians (writer converts)
     fm_envelope: int | None = None   # Patch.envelopes index that scales fm_index (None = static)
+    frames: list | None = None       # wavetable: list of single-cycle frames (any length each)
+    frame_pos: float = 0.0           # 0..1 position across `frames`
+    wt_name: str = ""
 
 
 @dataclass
@@ -76,6 +79,7 @@ class Filter:
     drive_db: float = 0.0
     keytrack: float = 0.0            # -1..1
     inputs: tuple[int, ...] = (0, 1, 2)   # oscillator indexes feeding it
+    after: int | None = None         # serial: takes the output of filters[after]
 
 
 @dataclass
