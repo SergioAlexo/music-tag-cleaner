@@ -77,6 +77,17 @@ export interface Contributes {
   theme?: ThemeSpec;
 }
 
+/** A host-managed binary the plugin needs (installed by the app from its own allowlisted index). */
+export interface EngineRequirement {
+  id: string;
+  /** Version range such as `>=0.1` or `0.1.2`; informational for the review prompt. */
+  version: string;
+}
+
+export interface PluginRequires {
+  engines?: EngineRequirement[];
+}
+
 export interface PluginManifest {
   id: string;
   name: string;
@@ -87,6 +98,8 @@ export interface PluginManifest {
   kind: PluginKind;
   permissions: string[];
   entry?: string;
+  /** Optional host-provided dependencies (plugin API v1 stays 1: absent = none). */
+  requires?: PluginRequires;
   contributes: Contributes;
 }
 
@@ -99,6 +112,7 @@ export const PERMISSION_INFO: Record<string, { label: string; risk: "low" | "med
   backup: { label: "Create tag backups", risk: "low" },
   "files.move": { label: "Rename, move and convert files", risk: "high" },
   "files.delete": { label: "Delete files (still asks you each time)", risk: "high" },
+  presets: { label: "Read synth presets and write converted presets to your output folder", risk: "medium" },
 };
 
 export const FIXED_PERMISSIONS = Object.keys(PERMISSION_INFO);
@@ -108,6 +122,7 @@ const LOCAL_ID_RE = /^[a-zA-Z][A-Za-z0-9]{0,39}$/;
 const HOST_RE = /^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d{1,5})?$/;
 const ACTION_ID_RE = /^[a-z][A-Za-z0-9]*(\.[a-zA-Z][A-Za-z0-9]*)+$/;
 const ENTRY_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]*\.js$/;
+const ENGINE_VERSION_RE = /^(>=|<=|>|<|=|\^|~)?\d+(\.\d+){0,2}$/;
 const SEMVER_RE = /^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/;
 
 export function isPermissionValid(p: string): boolean {
@@ -225,6 +240,34 @@ export function validateManifest(raw: unknown): ValidationResult {
   if (entry !== undefined && (typeof entry !== "string" || !ENTRY_RE.test(entry) || entry.includes("..")))
     errors.push("entry must be a plain file name ending in .js");
 
+  let requires: PluginRequires | undefined;
+  if (raw.requires !== undefined) {
+    const r = raw.requires;
+    if (!isObj(r)) errors.push("requires must be an object");
+    else {
+      for (const k of Object.keys(r)) if (k !== "engines") warnings.push(`requires.${k} is ignored`);
+      if (r.engines !== undefined) {
+        if (!Array.isArray(r.engines)) errors.push("requires.engines must be an array");
+        else {
+          if (r.engines.length > 5) errors.push("requires.engines allows at most 5 entries");
+          const seen = new Set<string>();
+          r.engines.forEach((e, i) => {
+            const w = `requires.engines[${i}]`;
+            if (!isObj(e)) return void errors.push(`${w} must be an object`);
+            if (typeof e.id !== "string" || !ID_RE.test(e.id) || e.id.length < 2 || e.id.length > 40)
+              errors.push(`${w}.id must be 2-40 lowercase letters, digits and hyphens`);
+            else if (seen.has(e.id)) errors.push(`${w}.id "${e.id}" is duplicated`);
+            else seen.add(e.id);
+            if (typeof e.version !== "string" || !ENGINE_VERSION_RE.test(e.version))
+              errors.push(`${w}.version must look like ">=0.1"`);
+          });
+          if (!errors.some((x) => x.startsWith("requires.")))
+            requires = { engines: (r.engines as EngineRequirement[]).map((e) => ({ id: e.id, version: e.version })) };
+        }
+      }
+    }
+  }
+
   const c = raw.contributes ?? {};
   if (!isObj(c)) {
     errors.push("contributes must be an object");
@@ -307,6 +350,7 @@ export function validateManifest(raw: unknown): ValidationResult {
       kind: kind as PluginKind,
       permissions: [...((perms as string[]) ?? [])],
       entry: m.entry,
+      ...(requires ? { requires } : {}),
       contributes: (c as Contributes) ?? {},
     },
   };
