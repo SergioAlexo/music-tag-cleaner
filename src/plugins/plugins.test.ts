@@ -16,6 +16,27 @@ describe("manifest validation", () => {
     expect(r.ok).toBe(true);
   });
 
+  it("validates the optional requires.engines", () => {
+    const ok = validateManifest(baseManifest({ requires: { engines: [{ id: "presetforge", version: ">=0.1" }] } }));
+    expect(ok.ok && ok.manifest.requires?.engines?.[0].id).toBe("presetforge");
+    const none = validateManifest(baseManifest());
+    expect(none.ok && none.manifest.requires).toBeUndefined();
+    const bad = (requires: unknown) => validateManifest(baseManifest({ requires }));
+    expect(bad("x").ok).toBe(false);
+    expect(bad({ engines: "presetforge" }).ok).toBe(false);
+    expect(bad({ engines: [{ id: "Bad Id", version: ">=0.1" }] }).ok).toBe(false);
+    expect(bad({ engines: [{ id: "presetforge", version: "latest" }] }).ok).toBe(false);
+    expect(bad({ engines: [{ id: "presetforge" }] }).ok).toBe(false);
+    expect(bad({ engines: [{ id: "a-b", version: "1" }, { id: "a-b", version: "1" }] }).ok).toBe(false);
+  });
+
+  it("accepts the presets permission and maps presets.* to it", () => {
+    expect(validateManifest(baseManifest({ permissions: ["presets"] })).ok).toBe(true);
+    expect(checkActionPermission([], "presets.convert", { readOnly: false }, "demo").allowed).toBe(false);
+    expect(checkActionPermission(["presets"], "presets.apply", { readOnly: false }, "demo").allowed).toBe(true);
+    expect(checkActionPermission(["read", "tags.write"], "presets.scan", { readOnly: true }, "demo").allowed).toBe(false);
+  });
+
   it("reports every problem, not just the first", () => {
     const r = validateManifest({ id: "Bad Id", name: "", version: "1", apiVersion: 9, permissions: ["root"] });
     expect(r.ok).toBe(false);
@@ -288,6 +309,20 @@ describe("manager: approval gate", () => {
     expect(backend.files.has("demo")).toBe(true);
     expect(manager.entry("demo")?.status).toBe("running");
     expect(t.registry.has("plugin.demo.x")).toBe(true);
+  });
+
+  it("hasEnabledEngine is true only for an enabled, approved plugin that requires the engine", async () => {
+    const t = makeEnv();
+    const { manager, backend } = makeManager(t);
+    const m = JSON.stringify(baseManifest({ requires: { engines: [{ id: "presetforge", version: ">=0.1" }] } }), null, 2);
+    backend.files.set("demo", { id: "demo", manifest: m, code: null });
+    await manager.refresh();
+    expect(manager.hasEnabledEngine("presetforge")).toBe(false); // not reviewed
+    await manager.approveInstalled("demo");
+    expect(manager.hasEnabledEngine("presetforge")).toBe(true);
+    expect(manager.hasEnabledEngine("other")).toBe(false);
+    await manager.disable("demo");
+    expect(manager.hasEnabledEngine("presetforge")).toBe(false);
   });
 
   it("an invalid proposal returns the problems", async () => {

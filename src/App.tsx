@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { applyConfirmText } from "./lib/presets";
 import { requestFocusPath } from "./lib/focusPath";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { audioDir, join as joinPath } from "@tauri-apps/api/path";
@@ -109,6 +110,9 @@ const JunkArtDialog = lazy(() =>
 );
 const StemsDialog = lazy(() =>
   import("./components/StemsDialog").then((m) => ({ default: m.StemsDialog })),
+);
+const PresetsDialog = lazy(() =>
+  import("./components/PresetsDialog").then((m) => ({ default: m.PresetsDialog })),
 );
 const UnifyDialog = lazy(() =>
   import("./components/UnifyDialog").then((m) => ({ default: m.UnifyDialog })),
@@ -492,6 +496,7 @@ export default function App() {
   // FFmpeg-backed conversion (v0.10). `ffmpegInfo` gates the Convert dialog.
   const [ffmpegInfo, setFfmpegInfo] = useState<FfmpegInfo | null>(null);
   const [convertOpen, setConvertOpen] = useState(false);
+  const [presetsReq, setPresetsReq] = useState<{ folder?: string; available: boolean } | null>(null);
   const [artworkPaths, setArtworkPaths] = useState<string[] | null>(null);
   const [junkArtOpen, setJunkArtOpen] = useState(false);
   /** Paths queued for stem separation; non-null means the dialog is open. */
@@ -1254,6 +1259,8 @@ export default function App() {
   // ---- v0.10: format conversion + cross-format grouping -------------------
 
   /** Opens the Convert dialog, optionally seeded with one right-clicked file. */
+  const openPresets = (opts: { folder?: string; available: boolean }) => setPresetsReq(opts);
+
   const openConvert = (file?: AudioFile) => {
     if (!file && filesApi.selectedPaths.length === 0) {
       return notify("No files selected", "info");
@@ -2310,6 +2317,7 @@ This rewrites the ${meta.singular} tag on ${
       savePatch,
       notify,
       files: filesApi.files,
+      presetsPluginActive: () => pluginManager.hasEnabledEngine("presetforge"),
       selectedPaths: filesApi.selectedPaths,
       setSelection: (paths) => {
         filesApi.setAll(false);
@@ -2358,6 +2366,9 @@ This rewrites the ${meta.singular} tag on ${
         runConvert: (o) => runConvert(o as ConvertOptions),
         openConvert: () => openConvert(),
         openStems: () => openStems(),
+        openPresets,
+        confirmPresetsApply: (dir, count) =>
+          confirm(applyConfirmText(dir, count), { title: "Write presets", kind: "info" }),
         openOrganize,
         openFindArtwork: (paths) => setArtworkPaths(paths),
         openJunkArt: () => setJunkArtOpen(true),
@@ -2697,6 +2708,15 @@ This rewrites the ${meta.singular} tag on ${
           readTags={readTagMap}
           onClose={() => setOrganizePaths(null)}
           onMoved={applyMoves}
+          notify={notify}
+        />
+      )}
+
+      {presetsReq && (
+        <PresetsDialog
+          initialFolder={presetsReq.folder}
+          available={presetsReq.available}
+          onClose={() => setPresetsReq(null)}
           notify={notify}
         />
       )}
