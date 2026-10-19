@@ -54,6 +54,15 @@ cbc = "0.1"
 hmac = "0.12"
 sha2 = "0.10"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+# SPIKE: rbxport's USB-export crates (GPL-2.0-or-later, taken under GPL-3),
+# pinned by rev — upstream has no releases and is not on crates.io.
+# rbl-onelibrary turns on rusqlite's bundled-sqlcipher-vendored-openssl, which
+# Cargo unifies into our own rusqlite as well.
+rbl-export = { git = "https://github.com/chrisle/rbxport", rev = "7fb4dad3f88a2cc0cecec0e718b4dde408fd7448" }
+rbl-anlz = { git = "https://github.com/chrisle/rbxport", rev = "7fb4dad3f88a2cc0cecec0e718b4dde408fd7448" }
+rbl-audio = { git = "https://github.com/chrisle/rbxport", rev = "7fb4dad3f88a2cc0cecec0e718b4dde408fd7448" }
+rbl-analysis = { git = "https://github.com/chrisle/rbxport", rev = "7fb4dad3f88a2cc0cecec0e718b4dde408fd7448" }
+rbl-pdb = { git = "https://github.com/chrisle/rbxport", rev = "7fb4dad3f88a2cc0cecec0e718b4dde408fd7448" }
 
 # Windows-only: raw volume access for the FAT32 formatter. Pinned to the same
 # major as the copy Tauri already pulls in, so the tree carries one `windows`.
