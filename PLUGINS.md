@@ -60,12 +60,32 @@ to "Needs review".
 | `backup` | `backup.tags`, `backup.archive` |
 | `files.move` | rename, organize, convert, stems |
 | `files.delete` | `files.delete`, `duplicates.delete` (the app still asks each time) |
+| `presets` | `presets.*`: read synth presets you pick, convert them to Vital in a staging area, write only into the output folder you choose (`presets.apply` asks each time) |
 | `network:<host>` | `mtc.fetch` to that host only (`network:api.example.com`, `network:*.example.com`) |
 | `action:<id>` | one specific action not covered above |
 
 Plugins can never call `script.run` or `plugins.*`. Ask for the fewest
 permissions that work: a plugin without `tags.write` cannot call a tag-writing
 action even if its code tries.
+
+## Requiring an engine
+
+Some plugins need a heavy helper program that cannot fit in a store zip (a
+512 KB script). A manifest may declare it with the optional `requires` field;
+plugin API v1 is unchanged, so a manifest without it behaves as before.
+
+```json
+"requires": { "engines": [{ "id": "presetforge", "version": ">=0.1" }] }
+```
+
+- `id` is an engine the app knows (lowercase letters, digits, hyphens);
+  `version` is a range such as `>=0.1`. At most 5 engines.
+- Plugins never supply a download URL. The app downloads engines only from its
+  own built-in, checksummed index, and the review dialog shows each required
+  engine as installed or not installed, with an Install button.
+- Host actions that drive an engine (`presets.*` for `presetforge`) work only
+  while an enabled, approved plugin declares that engine in `requires.engines`.
+  Without one they answer "Install the Preset Translator plugin".
 
 ## Script (index.js)
 
