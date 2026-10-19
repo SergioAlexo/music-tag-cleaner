@@ -2,7 +2,7 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* Media Fetch token system, with MusicTagCleaner's emerald/zinc palette. */
+/* Media Fetch token system, with Vatra Wave's emerald/zinc palette. */
 :root {
   --background: #ffffff;
   --foreground: #18181b;

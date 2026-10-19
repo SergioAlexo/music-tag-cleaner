@@ -1,4 +1,4 @@
-//! "Open with MusicTagCleaner" in the Windows 11 Explorer context menu.
+//! "Open with Vatra Wave" in the Windows 11 Explorer context menu.
 //!
 //! Windows 11's compact menu only lists `IExplorerCommand` handlers that come
 //! from a packaged app; plain registry verbs land under "Show more options".
@@ -178,7 +178,7 @@ impl Drop for OpenCommand {
 
 impl IExplorerCommand_Impl for OpenCommand_Impl {
     fn GetTitle(&self, _items: Ref<IShellItemArray>) -> Result<PWSTR> {
-        co_str("Open with MusicTagCleaner")
+        co_str("Open with Vatra Wave")
     }
 
     fn GetIcon(&self, _items: Ref<IShellItemArray>) -> Result<PWSTR> {

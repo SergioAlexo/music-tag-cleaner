@@ -1,4 +1,4 @@
-# Writing plugins for Music Tag Cleaner
+# Writing plugins for Vatra Wave
 
 A plugin adds a toolbar button, a right-click item, a table column, a new
 action (which AI assistants connected over MCP can call too) or a colour theme.

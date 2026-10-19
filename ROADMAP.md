@@ -2541,6 +2541,28 @@ parallel agents; details + click-throughs in `plans/v0.19/notes/F1.md`,
 
 Tests at release: 369 TS, 236 Rust, 9 mcp.
 
+### 66. Renamed to Vatra Wave (display name only) — unreleased
+
+The app outgrew "tag cleaner" (library, DJ sync, stems, plugins, presets), so
+everything a user reads now says **Vatra Wave**: window and HTML title,
+sidebar brand, the app card on Components (with a "Formerly Music Tag
+Cleaner" line), playlist-source labels, the Explorer "Open with Vatra Wave"
+verb (registry MUIVerb + Win11 shell-ext title + sparse-package display
+names), MCP tool text, plugin SDK/example authors, the AI plugin prompt,
+Rekordbox XML `PRODUCT`, backup zip name, MusicBrainz user agent, release
+title, README/PLUGINS/CLAUDE.
+
+**Kept on purpose** (see CLAUDE.md "Name"): `identifier`, `productName`, the
+`MusicTagCleaner Audio` ProgID and registry key names, the sparse package
+identity, the `mtc` source id, repo and updater URL. Changing `productName`
+moves the NSIS install dir, uninstall key and shortcuts, so the updater would
+install a second copy beside the old one; that needs its own migration step.
+Historical plan/notes files and the applied Supabase migration keep the old
+name.
+
+Verified: `npm run build`, vitest 369 passed, `cargo check` on the app, mcp
+and shell-ext. The UI was not opened (needs `tauri dev`).
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —

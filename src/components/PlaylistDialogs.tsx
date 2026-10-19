@@ -384,7 +384,7 @@ export function FacetExportDialog({
         <div className="text-xs font-medium text-muted-foreground">Create in</div>
         <label className="flex items-center gap-2">
           <input type="checkbox" className="accent-[var(--primary)]" checked={targets.mtc} onChange={(e) => setTargets({ ...targets, mtc: e.target.checked })} />
-          Music Tag Cleaner (smart playlists, keep their rules)
+          Vatra Wave (smart playlists, keep their rules)
         </label>
         <label className={cn("flex items-center gap-2", !mixxxAvailable && "opacity-50")}>
           <input

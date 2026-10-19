@@ -496,7 +496,7 @@ pub fn verify_db(path: &Path) -> Result<i64, String> {
         return Err(format!("Integrity check failed: {check}"));
     }
     conn.query_row("SELECT COUNT(*) FROM library_track", [], |r| r.get(0))
-        .map_err(|_| "Not a Music Tag Cleaner library file (no library_track table)".to_string())
+        .map_err(|_| "Not a Vatra Wave library file (no library_track table)".to_string())
 }
 
 /// Consistent copy of a live db (folds in the WAL) to a new file.

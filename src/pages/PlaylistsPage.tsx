@@ -188,7 +188,7 @@ export function PlaylistsPage({ notify, keyNotation, settings, savePatch, onLoad
     setAnchor(null);
   }, [source, selId]);
 
-  /** The Music Tag Cleaner snapshot doubles as "the library": mapping target for load-as-session and copies. */
+  /** The Vatra Wave snapshot doubles as "the library": mapping target for load-as-session and copies. */
   const mtc = snaps.mtc;
   const libraryKeys = useMemo(() => {
     const m = new Map<string, string>();
@@ -464,7 +464,7 @@ export function PlaylistsPage({ notify, keyNotation, settings, savePatch, onLoad
     void run(async () => {
       const t = target === "mtc" ? "mtc" : "mixxx";
       const r = await copyInto(t, target === "mixxx-crate");
-      finishCopy(t === "mtc" ? "Music Tag Cleaner" : "Mixxx", r);
+      finishCopy(t === "mtc" ? "Vatra Wave" : "Mixxx", r);
     });
   };
 
@@ -828,7 +828,7 @@ export function PlaylistsPage({ notify, keyNotation, settings, savePatch, onLoad
                         onClick={() =>
                           reportUnmatched(
                             "Not in your Library",
-                            "These tracks are in the playlist but not in your Music Tag Cleaner Library (matched by file path). Index their folder to make them editable here.",
+                            "These tracks are in the playlist but not in your Vatra Wave Library (matched by file path). Index their folder to make them editable here.",
                             notInLibrary.map((t) => t.path),
                           )
                         }
@@ -851,11 +851,11 @@ export function PlaylistsPage({ notify, keyNotation, settings, savePatch, onLoad
                   {smartDesc && <div className="mt-0.5 truncate text-xs text-muted-foreground" title={smartDesc}>Rules: {smartDesc}</div>}
                   {content?.partial && (
                     <div className="mt-0.5 flex items-center gap-1 text-xs text-amber-500">
-                      <AlertTriangle className="h-3 w-3" /> Has a rule Music Tag Cleaner can't evaluate (for example a My Tag), so the track list is incomplete.
+                      <AlertTriangle className="h-3 w-3" /> Has a rule Vatra Wave can't evaluate (for example a My Tag), so the track list is incomplete.
                     </div>
                   )}
                   {source === "mixxx" && node.kind === "smart" && (
-                    <div className="mt-0.5 text-xs text-muted-foreground">A static crate rebuilt from a Music Tag Cleaner smart playlist.</div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">A static crate rebuilt from a Vatra Wave smart playlist.</div>
                   )}
                 </div>
 
@@ -1035,7 +1035,7 @@ function CopyMenu({
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute right-0 top-9 z-50 w-72 rounded-md border bg-popover p-1 shadow-lg">
-            {source !== "mtc" && item("Music Tag Cleaner", "Keeps smart rules where it can", () => onCopy("mtc"))}
+            {source !== "mtc" && item("Vatra Wave", "Keeps smart rules where it can", () => onCopy("mtc"))}
             {source !== "mixxx" && item("Mixxx playlist", mixxxOk ? "Needs Mixxx closed; backs up first" : "Mixxx not found or running", () => onCopy("mixxx"), !mixxxOk)}
             {source !== "mixxx" && item("Mixxx crate", mixxxOk ? "Unordered; smart lists become “[smart]” crates" : "Mixxx not found or running", () => onCopy("mixxx-crate"), !mixxxOk)}
             {item("Rekordbox (xml file)…", "Import it in Rekordbox. Smart lists become static", onXml)}

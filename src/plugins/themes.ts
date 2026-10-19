@@ -24,7 +24,7 @@ function theme(
     id,
     name,
     version: "1.0.0",
-    author: "Music Tag Cleaner",
+    author: "Vatra Wave",
     description,
     apiVersion: 1,
     kind: "theme",

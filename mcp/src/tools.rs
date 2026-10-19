@@ -62,7 +62,7 @@ pub fn build_tools(actions: &[Value]) -> ToolSet {
 
 /// Resources exposed besides tools: `uri -> (action id, description)`.
 pub const RESOURCES: &[(&str, &str, &str)] = &[
-    ("mtc://session", "session.list", "Tracks in the current Music Tag Cleaner tab"),
+    ("mtc://session", "session.list", "Tracks in the current Vatra Wave tab"),
     ("mtc://selection", "session.selection", "Tracks currently selected in the table"),
 ];
 

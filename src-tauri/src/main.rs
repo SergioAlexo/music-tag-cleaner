@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
 /// Audio files / folders named on the command line — from a Windows
-/// "Open with MusicTagCleaner", a macOS "Open With", or a shell invocation.
+/// "Open with Vatra Wave", a macOS "Open With", or a shell invocation.
 /// The first instance stashes these here until the UI asks for them with
 /// `take_opened_files`; later invocations arrive via the single-instance hook.
 #[derive(Default)]
@@ -296,5 +296,5 @@ fn main() {
             commands::claude_cli::claude_generate_text,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running MusicTagCleaner");
+        .expect("error while running Vatra Wave");
 }

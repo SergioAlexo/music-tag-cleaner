@@ -880,13 +880,13 @@ export function registerAppActions(reg: ActionRegistry, get: () => AppEnv): void
   // Straight to the dj_* commands: they don't depend on any App state. Writes
   // are all `dangerous` because the same action can target Mixxx's database.
 
-  const SRC: JsonSchema = { type: "string", enum: ["rekordbox", "mixxx", "mtc"], description: "rekordbox (read-only) | mixxx | mtc (Music Tag Cleaner's own)" };
+  const SRC: JsonSchema = { type: "string", enum: ["rekordbox", "mixxx", "mtc"], description: "rekordbox (read-only) | mixxx | mtc (Vatra Wave's own)" };
   const WSRC: JsonSchema = { type: "string", enum: ["mixxx", "mtc"], description: "mixxx (needs Mixxx closed; backed up first) | mtc" };
   const loadSnap = (source: string) => invoke<DjSnapshotLite>("dj_load", { source });
 
   reg.register({
     id: "djplaylists.list",
-    title: "List playlists of Rekordbox, Mixxx or Music Tag Cleaner",
+    title: "List playlists of Rekordbox, Mixxx or Vatra Wave",
     description: "Tree of folders, playlists, smart playlists and crates with ids and track counts.",
     params: obj({ source: SRC }, ["source"]),
     readOnly: true,

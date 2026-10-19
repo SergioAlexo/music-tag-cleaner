@@ -1,4 +1,9 @@
-# 🎵 MusicTagCleaner
+# 🎵 Vatra Wave
+
+> **Formerly Music Tag Cleaner.** The app outgrew its name — it is now a full
+> DJ library workstation — so it is being renamed to Vatra Wave. Settings,
+> library, plugins and auto-updates carry over untouched; on Windows the
+> install folder and Start-menu entry still say "MusicTagCleaner" for now.
 
 Cross-platform desktop app (Tauri 2 + React/TypeScript + Rust) that strips audio
 file metadata down to the common essentials, backs up the original tags inside
@@ -129,7 +134,7 @@ The bundled icons are auto-generated placeholders. To use a real icon, drop a
 
 ## License
 
-MusicTagCleaner is free software, licensed under the **GNU General Public
+Vatra Wave is free software, licensed under the **GNU General Public
 License, version 3 or later** — see [LICENSE](LICENSE) for the full text.
 
     Copyright (C) 2026 Sergio Alexo

@@ -2,7 +2,7 @@
   "id": "bpm-range-column",
   "name": "BPM range column",
   "version": "1.0.0",
-  "author": "Music Tag Cleaner",
+  "author": "Vatra Wave",
   "description": "Adds a \"BPM range\" column that buckets each track's BPM (for example 120-129). Turn it on in the Columns menu.",
   "apiVersion": 1,
   "kind": "plugin",

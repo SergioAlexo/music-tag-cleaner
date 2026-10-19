@@ -53,9 +53,9 @@ pub fn bridge_file_path() -> PathBuf {
 }
 
 pub fn read_connection(path: &std::path::Path) -> Result<Connection, BridgeError> {
-    let hint = "Open Music Tag Cleaner and tick Settings -> AI control -> Allow AI control.";
+    let hint = "Open Vatra Wave and tick Settings -> AI control -> Allow AI control.";
     let text = std::fs::read_to_string(path)
-        .map_err(|_| BridgeError::NotConnected(format!("Music Tag Cleaner's AI control is not running ({} not found). {hint}", path.display())))?;
+        .map_err(|_| BridgeError::NotConnected(format!("Vatra Wave's AI control is not running ({} not found). {hint}", path.display())))?;
     parse_connection(&text).map_err(|e| BridgeError::NotConnected(format!("{e}. {hint}")))
 }
 
@@ -92,7 +92,7 @@ impl Bridge {
         };
         let mut resp = sent.map_err(|e| {
             BridgeError::NotConnected(format!(
-                "Could not reach Music Tag Cleaner on 127.0.0.1:{} ({e}). Is the app running with AI control on?",
+                "Could not reach Vatra Wave on 127.0.0.1:{} ({e}). Is the app running with AI control on?",
                 conn.port
             ))
         })?;

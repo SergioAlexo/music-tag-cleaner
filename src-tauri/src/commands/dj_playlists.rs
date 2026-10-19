@@ -1,5 +1,5 @@
 //! DJ-software playlists as one model: Rekordbox (read-only), Mixxx
-//! (read + write while closed) and Music Tag Cleaner's own playlists (stored
+//! (read + write while closed) and Vatra Wave's own playlists (stored
 //! in the library index database).
 //!
 //! The frontend loads a whole `DjSnapshot` per source (tree + tracks +

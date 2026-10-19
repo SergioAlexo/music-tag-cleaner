@@ -114,7 +114,7 @@ export function buildRekordboxPlaylistXml(
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <DJ_PLAYLISTS Version="1.0.0">
-  <PRODUCT Name="MusicTagCleaner" Version="1.0" Company=""/>
+  <PRODUCT Name="Vatra Wave" Version="1.0" Company=""/>
   <COLLECTION Entries="${tracks.length}">
 ${collection}
   </COLLECTION>

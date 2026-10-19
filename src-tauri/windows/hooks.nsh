@@ -8,9 +8,12 @@
 ;   - the ProgID under <ext>\OpenWithProgids, so it lists in "Open with".
 ; MultiSelectModel=Player keeps the verb visible for any number of selected
 ; files; each file launches the exe and the single-instance hook merges them.
+; The key and ProgID names keep the old "MusicTagCleaner" spelling so upgrades
+; overwrite and uninstalls remove what older versions wrote; only the visible
+; MUIVerb text carries the Vatra Wave name.
 
 !macro MTC_ADD_AUDIO_VERB EXT
-  WriteRegStr SHCTX "Software\Classes\SystemFileAssociations\${EXT}\shell\MusicTagCleaner" "MUIVerb" "Open with MusicTagCleaner"
+  WriteRegStr SHCTX "Software\Classes\SystemFileAssociations\${EXT}\shell\MusicTagCleaner" "MUIVerb" "Open with Vatra Wave"
   WriteRegStr SHCTX "Software\Classes\SystemFileAssociations\${EXT}\shell\MusicTagCleaner" "Icon" '"$INSTDIR\${MAINBINARYNAME}.exe",0'
   WriteRegStr SHCTX "Software\Classes\SystemFileAssociations\${EXT}\shell\MusicTagCleaner" "MultiSelectModel" "Player"
   WriteRegStr SHCTX "Software\Classes\SystemFileAssociations\${EXT}\shell\MusicTagCleaner\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" "%1"'

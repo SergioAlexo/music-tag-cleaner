@@ -11,7 +11,7 @@ import { AUTHORING_GUIDE } from "./guide";
 export function buildNewButtonPrompt(description: string, actionIds: string[]): string {
   const actions = actionIds.filter((a) => !a.startsWith("plugins.") && a !== "script.run").join(", ");
   return [
-    "You write small plugins for the desktop app Music Tag Cleaner (a DJ music-library tag editor).",
+    "You write small plugins for the desktop app Vatra Wave (a DJ music-library manager, formerly called Music Tag Cleaner).",
     "Turn the request below into ONE plugin. Prefer a declarative plugin (no code) when a button that calls an existing app action with fixed parameters is enough; only write a script when it truly needs logic.",
     "Ask for the fewest permissions that work.",
     "",

@@ -3,7 +3,7 @@
  *
  * A rule set is `match: all|any` over `{field, op, value}` rules. It is
  * evaluated over plain track rows (`RuleTrack`), which `dj_load` produces for
- * Rekordbox, Mixxx and the Music Tag Cleaner index alike, so one
+ * Rekordbox, Mixxx and the Vatra Wave index alike, so one
  * implementation answers "what is in this smart playlist" everywhere.
  *
  * Rekordbox smart lists (`djmdPlaylist.SmartList` XML) convert to and from

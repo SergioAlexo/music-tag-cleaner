@@ -1,4 +1,4 @@
-//! mtc-mcp: MCP server (stdio) for Music Tag Cleaner.
+//! mtc-mcp: MCP server (stdio) for Vatra Wave.
 //!
 //! Tools are generated from the app's action registry (`GET /actions`) every
 //! time a client asks for the list, so actions added in the app later (new
@@ -64,7 +64,7 @@ fn text_result(text: String, is_error: bool) -> CallToolResult {
 fn status_tool() -> Tool {
     serde_json::from_value(json!({
         "name": STATUS_TOOL,
-        "description": "Checks the connection to Music Tag Cleaner and explains how to turn on AI control if it is off.",
+        "description": "Checks the connection to Vatra Wave and explains how to turn on AI control if it is off.",
         "inputSchema": {"type": "object", "properties": {}},
         "annotations": {"readOnlyHint": true}
     }))
@@ -76,7 +76,7 @@ impl ServerHandler for Mtc {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().enable_resources().build())
             .with_server_info(Implementation::new("music-tag-cleaner", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-            "Controls the Music Tag Cleaner desktop app. Typical flow: session_list or library_search to find tracks, \
+            "Controls the Vatra Wave desktop app. Typical flow: session_list or library_search to find tracks, \
              table_select / tracks by path, then an action. Actions that change tags usually build a preview \
              (tags_standardize, tags_aiClean, ...): read it with changes_get, then write it with changes_apply or drop \
              it with changes_cancel. Risky actions ask the person for approval inside the app. Use script_run with \

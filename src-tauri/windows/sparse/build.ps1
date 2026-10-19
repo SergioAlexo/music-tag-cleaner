@@ -1,6 +1,6 @@
 <#
   Builds the shell-extension DLL and the sparse package that puts
-  "Open with MusicTagCleaner" in Windows 11's main right-click menu.
+  "Open with Vatra Wave" in Windows 11's main right-click menu.
 
     .\build.ps1                 # build + sign (self-signed dev cert) -> out\
     .\build.ps1 -Install        # also copy the DLL into the install folder,
@@ -92,7 +92,7 @@ if (-not $Install) { return }
 
 # 5. Install: DLL next to the exe, trust the cert, register the package
 if (-not (Test-Path "$InstallDir\music-tag-cleaner.exe")) {
-  throw "MusicTagCleaner is not installed in $InstallDir"
+  throw "Vatra Wave is not installed in $InstallDir"
 }
 Get-AppxPackage SergioAlexo.MusicTagCleaner.ShellExtension | Remove-AppxPackage
 # Explorer's COM surrogate holds the old DLL open until it exits.
@@ -111,4 +111,4 @@ if (-not $trusted) {
 }
 
 Add-AppxPackage -Path $pkg -ExternalLocation $InstallDir
-Write-Host 'Registered. Right-click an audio file to see "Open with MusicTagCleaner".'
+Write-Host 'Registered. Right-click an audio file to see "Open with Vatra Wave".'

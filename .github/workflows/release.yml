@@ -71,6 +71,6 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "Music Tag Cleaner ${{ github.ref_name }}"
+          releaseName: "Vatra Wave ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false

@@ -1,9 +1,18 @@
-# Music Tag Cleaner — AI working notes
+# Vatra Wave (formerly Music Tag Cleaner) — AI working notes
 
 Read this first; it exists so you don't have to explore the repo to get oriented.
 The owner is a DJ (Rekordbox / Serato / Traktor) and often calls this app
 "Media Fetch" — that is a *different* repo; tag/table/AI-Clean/YouTube-import
 requests mean this one.
+
+## Name: Vatra Wave, with old technical IDs kept on purpose
+User-visible text says **Vatra Wave**. These stay `MusicTagCleaner` / `musictagcleaner`
+because changing them breaks existing installs: `identifier` (app-data dir, AUMID,
+MCP bridge lookup), `productName` (NSIS install dir, uninstall key, shortcuts — a
+change makes the updater install a second copy beside the old one), the
+`MusicTagCleaner Audio` ProgID and registry key names in `windows/hooks.nsh`, the
+sparse package identity in `windows/sparse/`, the `mtc` playlist-source id, and the
+repo/updater URL. Moving `productName` needs a deliberate install-dir migration.
 
 ## Stack & commands
 - Tauri 2 desktop app: React + TypeScript + Tailwind (`src/`), Rust (`src-tauri/`).

@@ -2,7 +2,7 @@
   "id": "hide-genre-button",
   "name": "Hide Genre column button",
   "version": "1.0.0",
-  "author": "Music Tag Cleaner",
+  "author": "Vatra Wave",
   "description": "Adds a toolbar button that hides the Genre column. No code: it just calls the table.setColumns action.",
   "apiVersion": 1,
   "kind": "plugin",

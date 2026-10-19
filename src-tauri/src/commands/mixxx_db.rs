@@ -472,7 +472,7 @@ fn apply_one(conn: &Connection, by_path: &HashMap<String, i64>, op: &DjOp) -> Re
             }
             Ok(OpResult { id: Some(id.clone()), created: false, matched: 0, unmatched: vec![] })
         }
-        DjOp::SetRules { .. } => Err("Mixxx can't store smart rules; keep the rule in Music Tag Cleaner".into()),
+        DjOp::SetRules { .. } => Err("Mixxx can't store smart rules; keep the rule in Vatra Wave".into()),
     }
 }
 

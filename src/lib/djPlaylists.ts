@@ -61,7 +61,7 @@ export interface OpResult {
 export const SOURCE_LABEL: Record<DjSource, string> = {
   rekordbox: "Rekordbox",
   mixxx: "Mixxx",
-  mtc: "Music Tag Cleaner",
+  mtc: "Vatra Wave",
 };
 
 /**
@@ -415,7 +415,7 @@ export function buildRekordboxTreeXml(nodes: XmlNode[], tracks: DjTrack[], opts:
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <DJ_PLAYLISTS Version="1.0.0">
-  <PRODUCT Name="MusicTagCleaner" Version="1.0" Company=""/>
+  <PRODUCT Name="Vatra Wave" Version="1.0" Company=""/>
   <COLLECTION Entries="${collection.length}">
 ${collection.join("\n")}
   </COLLECTION>

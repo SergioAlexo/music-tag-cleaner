@@ -175,7 +175,7 @@ struct GhAsset {
 pub async fn install_ffmpeg(app: AppHandle) -> Result<(), String> {
     if !cfg!(target_os = "windows") {
         return Err("Install FFmpeg with your package manager (`brew install ffmpeg`, \
-                    `apt install ffmpeg`, …) — Music Tag Cleaner picks it up off PATH \
+                    `apt install ffmpeg`, …) — Vatra Wave picks it up off PATH \
                     automatically."
             .to_string());
     }

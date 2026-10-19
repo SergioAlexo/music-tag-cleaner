@@ -64,7 +64,7 @@ export function Sidebar({ page, setPage, fileCount, errorLogCount, libraryTrackC
             />
           </button>
           <div className="text-sm font-bold leading-tight">
-            <span className="text-muted-foreground">/ </span>MusicTagCleaner
+            <span className="text-muted-foreground">/ </span>Vatra Wave
           </div>
           <div className="text-[10px] text-muted-foreground">
             {version ? `v${version}` : "v…"} · lofty · ollama

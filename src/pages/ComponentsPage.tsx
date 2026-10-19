@@ -396,7 +396,7 @@ export function ComponentsPage({ ollamaUrl, notify, onOllamaChanged, onFfmpegCha
 
       <UsbFormatCard notify={notify} />
 
-      {/* Music Tag Cleaner itself */}
+      {/* Vatra Wave (the app) itself */}
       <Card className="p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -405,7 +405,7 @@ export function ComponentsPage({ ollamaUrl, notify, onOllamaChanged, onFfmpegCha
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-semibold">Music Tag Cleaner</span>
+                <span className="font-semibold">Vatra Wave</span>
                 <Badge className="bg-secondary">v{appVersion ?? "…"}</Badge>
                 {update && (
                   <Badge className="gap-1 bg-primary/15 text-primary">
@@ -419,6 +419,7 @@ export function ComponentsPage({ ollamaUrl, notify, onOllamaChanged, onFfmpegCha
               >
                 Release notes <ExternalLink className="h-3 w-3" />
               </button>
+              <div className="mt-0.5 text-[11px] text-muted-foreground">Formerly Music Tag Cleaner</div>
             </div>
           </div>
 

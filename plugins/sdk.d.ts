@@ -1,5 +1,5 @@
 /**
- * Types for Music Tag Cleaner plugin authors (plugin API version 1).
+ * Types for Vatra Wave plugin authors (plugin API version 1).
  *
  * Your script runs in a sandbox with one global, `mtc`. Reference this file
  * from your editor with a triple-slash directive to get completion:

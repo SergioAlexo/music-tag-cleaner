@@ -20,7 +20,7 @@ use crate::commands::files::{apply_cover_bytes, par_map};
 use crate::models::ArtworkChange;
 
 const USER_AGENT: &str = concat!(
-    "MusicTagCleaner/",
+    "VatraWave/",
     env!("CARGO_PKG_VERSION"),
     " ( https://github.com/sergioalexo/music-tag-cleaner )"
 );

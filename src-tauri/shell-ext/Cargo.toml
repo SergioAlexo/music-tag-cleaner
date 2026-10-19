@@ -1,7 +1,7 @@
 [package]
 name = "music-tag-cleaner-shell"
 version = "0.19.1"
-description = "Windows 11 Explorer context-menu entry (IExplorerCommand) for MusicTagCleaner"
+description = "Windows 11 Explorer context-menu entry (IExplorerCommand) for Vatra Wave"
 license = "GPL-3.0-or-later"
 edition = "2021"
 publish = false

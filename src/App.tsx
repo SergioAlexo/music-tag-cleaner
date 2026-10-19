@@ -704,7 +704,7 @@ export default function App() {
     };
   }, []);
 
-  // Files the app was launched with ("Open with MusicTagCleaner" in Explorer,
+  // Files the app was launched with ("Open with Vatra Wave" in Explorer,
   // or a path on the command line). The Rust side keeps a queue; we drain it on
   // mount, whenever the "open-files" event nudges us (a later "Open with"), and
   // a couple more times to catch the burst of processes a multi-file selection
@@ -1659,7 +1659,7 @@ export default function App() {
     const now = new Date();
     const pad = (n: number) => n.toString().padStart(2, "0");
     const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
-    const defaultName = `MusicTagCleaner-backup-${stamp}-${paths.length}-tracks.zip`;
+    const defaultName = `VatraWave-backup-${stamp}-${paths.length}-tracks.zip`;
 
     const ok = await confirm(
       `Archive ${paths.length} file${paths.length === 1 ? "" : "s"} (${formatBytes(totalBytes)}, uncompressed) into a single ZIP?`,
