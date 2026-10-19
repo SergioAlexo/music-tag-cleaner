@@ -160,3 +160,23 @@ raw file is fine). Put its address in Plugins -> Store.
 - The app refuses a download whose SHA-256 differs from the index, then shows
   the same review dialog (permissions + code) as any other install. Free plugins
   only. `http://` is accepted for `localhost` testing only.
+
+## Developing the Preset Translator
+
+The `preset-translator` example plugin (`plugins-examples/preset-translator/`)
+drives the `presetforge` Python engine through the `presets.*` actions. Without
+a released engine, run it from source:
+
+1. Install the engine's Python deps (Python 3.11+): see `presetforge/`.
+2. Point the app at the dev shim, then start the app:
+
+```powershell
+$env:MTC_PRESETFORGE = "$PWD\presetforge\dev\presetforge.cmd"
+npm run tauri dev
+```
+
+The shim runs `python -m presetforge <args>` with `%PRESETFORGE_PYTHON%` if set
+(a specific python.exe or venv), otherwise `py -3`. Install the plugin from the
+Plugins page (Load from folder), approve it, then use the Presets toolbar button.
+The `presets.*` actions (except `presets.open`) stay locked until an enabled,
+approved plugin declares `requires.engines` with `presetforge`.
