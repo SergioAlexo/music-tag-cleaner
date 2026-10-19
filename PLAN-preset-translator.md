@@ -827,3 +827,93 @@ Two separate needs, kept apart:
 - Pigments `.pgtx`: <https://forum.arturia.com/t/preset-containing-external-audio-sample/7037>
 - Sound matching research: InverSynth <https://arxiv.org/pdf/1812.06349>, DAFx-24 <https://dafx.de/paper-archive/2024/papers/DAFx24_paper_95.pdf>
 - Rust VST3 hosting: <https://docs.rs/crate/vst3-host/0.5.0>; headless-host pitfalls <https://forum.juce.com/t/headless-vst3-host-some-plugins-render-silence/58169>
+
+---
+
+## 10. Phase 1 contract (frozen 2026-10-19, built by parallel agents)
+
+Decisions taken so phase 1 isn't blocked (both reversible):
+- **The engine lives in this repo for now**, as `presetforge/` (a Python package, like
+  `mcp/` is a Rust crate here). It can be split into its own repo later.
+- **`requires.engines` is an optional field in plugin API v1**, so `apiVersion` stays 1.
+
+Out of scope for phase 1: `presets.generate` and `presets.edit` (phase 4), the full UPM
+(phase 2), PyInstaller release builds, and a published engine index (the compiled-in
+index starts **empty**, so installs come later and dev uses the override).
+
+### 10.1 Engine CLI (`presetforge/`, Python ≥3.11)
+`python -m presetforge <cmd> --json [...]` (the console script is `presetforge`).
+stdout carries **only** JSON lines; stderr is free text for logs.
+```
+version                                   -> result {"name":"presetforge","version":"0.1.0","formats":["serum1","serum2","vital"]}
+scan <path>...                            -> result {"items":[ScanItem]}   (paths may be files or folders; recurse folders)
+convert <file>... --out-dir D [--serum-root R] [--max-frames N]
+                                          -> progress per file, then result {"items":[ConvertItem]}
+verify <file.vital>...                    -> progress per file, then result {"items":[VerifyItem]}   (needs extra [verify] = vita, numpy)
+```
+Line shapes: `{"event":"progress","done":3,"total":10,"file":"…"}`,
+`{"event":"warning","message":"…","file":"…"?}`, `{"event":"result","data":{…}}`,
+`{"event":"error","message":"…"}`. One `result` per run. Per-file failures go inside
+items (`status:"failed"`), and the exit code stays 0. A non-zero exit means fatal only
+(bad args, missing dependency), with an `error` line first.
+```
+ScanItem    {path, synth:"serum1"|"serum2"|"vital"|"unknown", name, supported:bool, reason?:string}
+ConvertItem {source, output?:string, status:"ok"|"approx"|"failed", error?:string,
+             report:{exact:int, approximated:[{field,note}], dropped:[{field,note}]}}
+VerifyItem  {file, loaded:bool, peakDb?:number, rmsDb?:number, silent?:bool, clips?:bool, nan?:bool}
+```
+`output` file names = source stem + `.vital`, de-duplicated with ` (2)` etc. inside the out-dir.
+
+### 10.2 Tauri commands (Rust: `commands/presets.rs`, `commands/engines.rs`)
+JS calls them with camelCase args (Tauri maps them to snake_case).
+```
+engines_status()                         -> [{id, installedVersion?, path?, devOverride:bool, available?:{version,size}}]
+engine_install(id)                       -> {id, version, path}         emits "engine-progress" {id, phase, downloaded, total}
+presets_scan(paths)                      -> ScanItem[]
+presets_convert(paths, serumRoot?, maxFrames?) -> {batchId, items:ConvertItem[]}   emits "presets-progress" {batchId, done, total, file}
+presets_verify(batchId)                  -> VerifyItem[]
+presets_apply(batchId, outputDir, include?: string[] /*sources*/) -> {written:string[], skipped:[{source,reason}]}
+presets_report(batchId)                  -> {batchId, items:ConvertItem[]}
+presets_discard(batchId)                 -> null
+```
+- **Engine discovery:** env `MTC_PRESETFORGE` (an executable or `.cmd`/`.bat` path, i.e. the
+  dev override), else `<app_data>/engines/presetforge/<highest version>/presetforge(.exe)`.
+  Missing → `Err("The presetforge engine is not installed")`.
+- **Engine index:** `src-tauri/engines.json`, compiled in with `include_str!`:
+  `[{id, version, url, sha256, size}]`, initially `[]`. Install = download (reuse
+  `plugin_store::url_allowed` + `sha256_hex`), verify, unzip into the versioned folder.
+  The engine zip extractor is separate from the plugin one, because it allows binaries
+  and large files, but it refuses `..`, absolute paths and symlinks.
+- **Staging:** `<app_data>/presets-staging/<batchId>/`. batchId = timestamp + random hex.
+- **Apply rules (enforced in Rust):** `outputDir` must exist and be a directory. Only
+  files from that batch's staging dir are copied in. Never overwrite: on a name clash,
+  write `name (2).vital`. Never write outside `outputDir` (canonicalize both and check
+  the prefix). Never touch source paths.
+
+### 10.3 App actions + SDK (TypeScript)
+- `src/lib/appActions.ts` registers `presets.open {folder?}`, `presets.scan {paths}`,
+  `presets.convert {paths, serumRoot?, maxFrames?}`, `presets.verify {batchId}`,
+  `presets.apply {batchId, outputDir, include?}`, `presets.report {batchId}`. These are
+  thin wrappers over the commands above. `presets.apply` asks for confirmation every
+  time (same mechanism as `files.delete`).
+- **Gating:** every `presets.*` action except `presets.open` checks that some
+  **enabled, approved plugin declares `requires.engines` containing `presetforge`**.
+  Otherwise it rejects with "Install the Preset Translator plugin (Plugins → Store)".
+  `presets.open` without the plugin shows that message in the dialog.
+- `src/plugins/permissions.ts`: `presets.*` → `"presets"`. `src/plugins/manifest.ts`:
+  add `presets` to `PERMISSION_INFO` (label "Read synth presets and write converted
+  presets to your output folder", risk `medium`). Optional `requires: {engines:
+  [{id, version}]}` is validated (id like plugin ids; version a string like `>=0.1`)
+  and shown in `PluginReviewDialog.tsx`, including the engine's install state.
+- `src/components/PresetsDialog.tsx`: opened by `presets.open`. Pick files/folder → scan
+  list (virtualized) → tick → Convert → table with status ✓/≈/✗ and a report drawer →
+  optional Verify → Apply to an output folder (picker). Follows CLAUDE.md UI rules: no
+  drag, selecting separate from ticking, nothing written before Apply.
+- `PLUGINS.md` and `plugins/sdk.d.ts` document `presets` and `requires.engines`
+  (wave 2).
+
+### 10.4 Waves
+- **Wave 1 (parallel):** A = engine (`presetforge/` only). B1 = TypeScript side
+  (`src/` + PLUGINS.md table row). B2 = Rust side (`src-tauri/` only).
+- **Wave 2:** C = `plugins-examples/preset-translator/` + docs + ROADMAP entry + a dev
+  shim `presetforge/dev/presetforge.cmd`. D = phase-2 engine readers (Surge XT, Dexed).
