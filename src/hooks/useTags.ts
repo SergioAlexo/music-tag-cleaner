@@ -90,6 +90,16 @@ export interface ApplyResult {
 export type Progress = (done: number, total: number) => void;
 
 /**
+ * The entries of `attempted` whose file `result` actually wrote — what the
+ * table and the undo history may record. A failed write (a file locked by a
+ * DJ app, read-only) changed nothing on disk.
+ */
+export function writtenOnly<T extends { path: string }>(attempted: T[], result: ApplyResult): T[] {
+  const failed = new Set(result.failedPaths ?? []);
+  return failed.size ? attempted.filter((c) => !failed.has(c.path)) : attempted;
+}
+
+/**
  * Files per chunk for the stoppable batch writers (Backup / Restore). Small
  * enough that Stop feels immediate and the progress bar keeps moving, large
  * enough that the per-call overhead disappears.
@@ -336,10 +346,14 @@ export function useTags() {
   const updateRawFieldMany = async (
     edits: { path: string; fieldKey: string; value: string }[],
   ): Promise<ApplyResult> => {
-    if (!edits.length) return { written: 0, errors: [] };
+    if (!edits.length) return { written: 0, errors: [], failedPaths: [] };
     const results = await invoke<WriteResult[]>("write_raw_fields_batch", { items: edits });
-    const errors = results.filter((r) => r.error).map((r) => `${basename(r.path)}: ${r.error}`);
-    return { written: results.length - errors.length, errors };
+    const failed = results.filter((r) => r.error);
+    return {
+      written: results.length - failed.length,
+      errors: failed.map((r) => `${basename(r.path)}: ${r.error}`),
+      failedPaths: failed.map((r) => r.path),
+    };
   };
 
   /**

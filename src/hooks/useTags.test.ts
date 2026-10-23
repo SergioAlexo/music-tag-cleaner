@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TagData } from "../types";
-import { foldEditsByPath } from "./useTags";
+import { foldEditsByPath, writtenOnly } from "./useTags";
 
 const tags = (over: Partial<TagData> = {}): TagData => ({
   title: "Kerala",
@@ -31,6 +31,20 @@ describe("foldEditsByPath", () => {
     const [item] = foldEditsByPath([{ path: "a.mp3", current, field: "artist", value: "Simon Green" }]);
     expect(item.keepExtra).toEqual(["Label"]);
     expect(current.artist).toBe("Bonobo");
+  });
+
+  it("keeps only the changes whose file was written", () => {
+    const attempted = [
+      { path: "a.mp3", field: "title" },
+      { path: "locked.mp3", field: "title" },
+      { path: "b.mp3", field: "title" },
+    ];
+    // A file another program held open must not show (or undo) an edit it never got.
+    expect(writtenOnly(attempted, { written: 2, errors: ["locked"], failedPaths: ["locked.mp3"] })).toEqual([
+      attempted[0],
+      attempted[2],
+    ]);
+    expect(writtenOnly(attempted, { written: 3, errors: [] })).toEqual(attempted);
   });
 
   it("lets the later of two edits to the same field win", () => {

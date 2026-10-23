@@ -25,7 +25,7 @@ import { useSettings } from "./hooks/useSettings";
 import { useLibraryIndex, mergeWithSession } from "./hooks/useLibraryIndex";
 import { useRekordboxLookup, withRekordbox } from "./hooks/useRekordbox";
 import { buildRekordboxSyncPreview } from "./lib/rekordboxSync";
-import { useTags } from "./hooks/useTags";
+import { useTags, writtenOnly } from "./hooks/useTags";
 import { OrganizeDialog, toOrganizeItem } from "./components/OrganizeDialog";
 import { LibraryPage } from "./pages/LibraryPage";
 import { ALL_COLUMNS } from "./components/TrackTable";
@@ -740,7 +740,14 @@ export default function App() {
     });
   };
 
-  const afterWrite = async (affected: string[] = []) => {
+  /**
+   * Refreshes the table after a write. `reindex` is for writes that record
+   * no history entry (Generate IDs, Back Up, Restore Backup) — `pushHistory`
+   * already refreshes the Library index for everything else, and those left
+   * genres and search showing the old values until the next full re-index.
+   */
+  const afterWrite = async (affected: string[] = [], reindex = false) => {
+    if (reindex) void reindexLibraryPaths(affected);
     setPending(null);
     setInspected(null);
     if (affected.length) {
@@ -1213,7 +1220,7 @@ export default function App() {
           : "No tracks to assign",
         result.assigned ? "success" : "info",
       );
-      await afterWrite(paths);
+      await afterWrite(paths, true);
     } catch (e) {
       notify(String(e), "error");
     } finally {
@@ -1436,7 +1443,7 @@ export default function App() {
     if (!state) return;
     setBusy(true);
     try {
-      const changes: HistoryChange[] = [];
+      const attempted: HistoryChange[] = [];
       const edits = [];
       let maxCounter = settings.nextTrackId;
       const { map } = await tagsApi.read(
@@ -1455,7 +1462,7 @@ export default function App() {
             field: "trackId" as keyof TagData & string,
             value: g.canonicalId,
           });
-          changes.push({
+          attempted.push({
             path: m.path,
             field: "trackId",
             before: m.fromId ?? "",
@@ -1465,6 +1472,7 @@ export default function App() {
       }
       const result = await tagsApi.updateFieldMany(edits, settings);
       result.errors.forEach((e) => notify(e, "error"));
+      const changes = writtenOnly(attempted, result);
       if (changes.length) {
         setLibraryTags((prev) => {
           const next = { ...prev };
@@ -1605,8 +1613,8 @@ export default function App() {
    * above. Returns whether anything was actually removed, so the caller
    * knows whether to update its own UI.
    */
-  const deleteDuplicateFiles = async (paths: string[]): Promise<boolean> => {
-    if (!paths.length) return false;
+  const deleteDuplicateFiles = async (paths: string[]): Promise<string[]> => {
+    if (!paths.length) return [];
     const totalBytes = paths.reduce(
       (sum, p) => sum + (filesApi.files.find((f) => f.path === p)?.size ?? 0),
       0,
@@ -1615,32 +1623,34 @@ export default function App() {
       `Move ${paths.length} file${paths.length === 1 ? "" : "s"} (${formatBytes(totalBytes)}) to the Recycle Bin?`,
       { title: "Remove Duplicates", kind: "warning" },
     );
-    if (!ok) return false;
+    if (!ok) return [];
     setBusy(true);
-    let removed = 0;
+    // Only what actually went to the Recycle Bin leaves the list: a file whose
+    // delete failed (locked, permissions) is still there and must stay visible.
+    const removed: string[] = [];
     const errors: string[] = [];
     for (const p of paths) {
       try {
         await invoke("delete_file", { path: p });
-        removed++;
+        removed.push(p);
       } catch (e) {
         errors.push(`${basename(p)}: ${e}`);
       }
     }
     errors.forEach((e) => notify(e, "error"));
-    if (removed) {
-      invalidateCovers(paths);
-      filesApi.removeFiles(paths);
-      void reindexLibraryPaths(paths);
+    if (removed.length) {
+      invalidateCovers(removed);
+      filesApi.removeFiles(removed);
+      void reindexLibraryPaths(removed);
       setLibraryTags((prev) => {
         const next = { ...prev };
-        for (const p of paths) delete next[p];
+        for (const p of removed) delete next[p];
         return next;
       });
-      notify(`Removed ${removed} file${removed === 1 ? "" : "s"}`, "success");
+      notify(`Removed ${removed.length} file${removed.length === 1 ? "" : "s"}`, "success");
     }
     setBusy(false);
-    return removed > 0;
+    return removed;
   };
 
   /**
@@ -1862,6 +1872,8 @@ export default function App() {
       if (res.converted) {
         dropLibraryTags(paths);
         await filesApi.refreshPaths(paths);
+        // A value only a secondary tag held is now visible: refresh the index.
+        void reindexLibraryPaths(paths);
       }
       notify(
         res.converted
@@ -1976,7 +1988,7 @@ export default function App() {
   const editField = async (paths: string[], field: keyof TagData & string, value: string) => {
     setBusy(true);
     try {
-      const changes: HistoryChange[] = [];
+      const attempted: HistoryChange[] = [];
       const edits = [];
       for (const path of paths) {
         const current = libraryTags[path];
@@ -1984,11 +1996,14 @@ export default function App() {
         const before = (current as unknown as Record<string, string | undefined>)[field] ?? "";
         if (before === value) continue;
         edits.push({ path, current, field, value });
-        changes.push({ path, field, before, after: value });
+        attempted.push({ path, field, before, after: value });
         clearUnresolved(path);
       }
       const result = await tagsApi.updateFieldMany(edits, settings);
       result.errors.forEach((e) => notify(e, "error"));
+      // A write that failed (file locked by a DJ app, read-only) changed
+      // nothing: neither the table nor the undo history may claim it did.
+      const changes = writtenOnly(attempted, result);
       if (changes.length) {
         setLibraryTags((prev) => {
           const next = { ...prev };
@@ -2012,17 +2027,18 @@ export default function App() {
   const editRawField = async (paths: string[], rawKey: string, value: string) => {
     setBusy(true);
     try {
-      const changes: HistoryChange[] = [];
+      const attempted: HistoryChange[] = [];
       const edits = [];
       for (const path of paths) {
         const current = libraryTags[path];
         const before = current?.allFields?.[rawKey] ?? "";
         if (before === value) continue;
         edits.push({ path, fieldKey: rawKey, value });
-        changes.push({ path, field: `__raw:${rawKey}`, before, after: value });
+        attempted.push({ path, field: `__raw:${rawKey}`, before, after: value });
       }
       const result = await tagsApi.updateRawFieldMany(edits);
       result.errors.forEach((e) => notify(e, "error"));
+      const changes = writtenOnly(attempted, result);
       if (changes.length) {
         setLibraryTags((prev) => {
           const next = { ...prev };
@@ -2052,7 +2068,7 @@ export default function App() {
   const editRating = async (paths: string[], stars: number) => {
     setBusy(true);
     try {
-      const changes: HistoryChange[] = [];
+      const attempted: HistoryChange[] = [];
       const edits = [];
       for (const path of paths) {
         const current = libraryTags[path];
@@ -2060,10 +2076,11 @@ export default function App() {
         const before = current.rating ?? 0;
         if (before === stars) continue;
         edits.push({ path, current: { ...current, rating: stars }, field: "rating" as const, value: stars });
-        changes.push({ path, field: "rating", before, after: stars });
+        attempted.push({ path, field: "rating", before, after: stars });
       }
       const result = await tagsApi.updateFieldMany(edits, settings);
       result.errors.forEach((e) => notify(e, "error"));
+      const changes = writtenOnly(attempted, result);
       if (changes.length) {
         setLibraryTags((prev) => {
           const next = { ...prev };
@@ -2096,7 +2113,7 @@ export default function App() {
       if (result.written)
         notify(`Backed up ${result.written} file${result.written === 1 ? "" : "s"}`, "success");
       if (result.stopped) notify("Backup stopped", "info");
-      await afterWrite(paths);
+      await afterWrite(paths, true);
     } catch (e) {
       notify(String(e), "error");
     } finally {
@@ -2164,7 +2181,7 @@ export default function App() {
           "success",
         );
       if (result.stopped) notify("Restore stopped", "info");
-      await afterWrite(paths);
+      await afterWrite(paths, true);
     } catch (e) {
       notify(String(e), "error");
     } finally {
@@ -2240,7 +2257,12 @@ This rewrites the ${meta.singular} tag on ${
 
     setBusy(true);
     try {
-      if (inSession.length) await editField(inSession, meta.retagField, trimmed);
+      if (inSession.length) {
+        await editField(inSession, meta.retagField, trimmed);
+        // editField clears the busy flag when it finishes; the retag of the
+        // tracks that aren't loaded (often most of them) is still to come.
+        setBusy(true);
+      }
       if (offSession.length) {
         const results = await invoke<{ path: string; error: string | null }[]>("retag_field", {
           paths: offSession,

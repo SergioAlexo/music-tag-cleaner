@@ -102,13 +102,16 @@ export function useHistory({
     }
     if (artChanges.length) invalidateCovers(artChanges.map((c) => c.path));
 
-    await tagsApi.updateRawFieldMany(
+    const raw = await tagsApi.updateRawFieldMany(
       rawChanges.map((c) => ({
         path: c.path,
         fieldKey: c.field.slice(RAW_FIELD_PREFIX.length),
         value: String(useAfter ? c.after : c.before),
       })),
     );
+    // Same as the tag writes below: a failed write must not let the entry
+    // move to the other stack as if it had been undone (or redone).
+    if (raw.errors.length) throw new Error(raw.errors[0]);
 
     const paths = [...new Set(tagChanges.map((c) => c.path))];
     const { map } = await tagsApi.read(paths);
