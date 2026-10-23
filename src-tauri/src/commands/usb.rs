@@ -334,6 +334,13 @@ mod tests {
     }
 
     #[test]
+    fn labels_lose_whatever_could_break_the_helper_command_line() {
+        assert_eq!(fat32_label(r#"dj "stick"\"#), "DJ STICK");
+        assert_eq!(fat32_label("sergio's dj stick 2026"), "SERGIOS DJ ");
+        assert_eq!(fat32_label("cdj_usb-1"), "CDJ_USB-1");
+    }
+
+    #[test]
     fn a_single_volume_parses_even_though_powershell_omits_the_array() {
         // PS 5.1 emits a bare object when exactly one volume matches — the
         // common case of one USB stick plugged in.
@@ -646,17 +653,23 @@ pub fn format_fat32_sized<T: Read + Write + Seek>(
     format_fat32_prepared(SectorAligned::with_len(device, len_bytes), label)
 }
 
+/// What a FAT32 volume label can actually hold: up to 11 upper-case letters,
+/// digits, spaces, `_` and `-`; anything else is dropped.
+fn fat32_label(label: &str) -> String {
+    label
+        .to_ascii_uppercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '_' | '-'))
+        .take(11)
+        .collect()
+}
+
 fn format_fat32_prepared<T: Read + Write + Seek>(
     mut dev: SectorAligned<T>,
     label: &str,
 ) -> Result<(), String> {
     let mut label_bytes = [b' '; 11];
-    for (slot, ch) in label_bytes.iter_mut().zip(
-        label
-            .to_ascii_uppercase()
-            .bytes()
-            .filter(|b| b.is_ascii_alphanumeric() || *b == b' ' || *b == b'_' || *b == b'-'),
-    ) {
+    for (slot, ch) in label_bytes.iter_mut().zip(fat32_label(label).bytes()) {
         *slot = ch;
     }
     let opts = fatfs::FormatVolumeOptions::new()
@@ -801,7 +814,11 @@ pub fn format_fat32_blocking(letter: &str, label: &str) -> Result<(), String> {
     // Ask before locking: this is a plain query and a clearer error if it fails.
     let len = volume_length(&file)?;
 
-    fsctl(&file, FSCTL_LOCK_VOLUME, "lock")?;
+    // The lock fails while anything has the drive open - by far the usual
+    // reason being an Explorer window or a DJ app looking at it.
+    fsctl(&file, FSCTL_LOCK_VOLUME, "lock").map_err(|e| {
+        format!("{e}. Close any Explorer window or program using {}: (Rekordbox, a player) and try again.", drive.letter)
+    })?;
     let dismounted = fsctl(&file, FSCTL_DISMOUNT_VOLUME, "dismount");
     let formatted = dismounted.and_then(|()| format_fat32_sized(&file, len, label));
     // Always give the volume back, even when the format failed part way.
@@ -877,11 +894,14 @@ fn run_elevated_format(letter: &str, label: &str) -> Result<(), String> {
     ));
     let _ = std::fs::remove_file(&err_file);
 
-    // Quote the label: it can contain spaces and is user-supplied.
+    // Quoted, since it can contain spaces, and reduced to what FAT32 keeps
+    // anyway first: a typed label ending in `\` turned the closing quote into
+    // an escaped one, and the helper then read the label and error-file
+    // arguments wrong.
     let params = format!(
         "{FORMAT_HELPER_ARG} {} \"{}\" \"{}\"",
         letter,
-        label.replace('"', ""),
+        fat32_label(label),
         err_file.display()
     );
 

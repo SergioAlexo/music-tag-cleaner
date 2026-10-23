@@ -144,6 +144,11 @@ fn main() {
                 if window.label() == "main" {
                     commands::organize::snapshot_on_exit(window.app_handle());
                     bridge::shutdown(window.app_handle());
+                    // Off the event-loop thread, like every other window call.
+                    let app = window.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = commands::lyrics_output::close(&app);
+                    });
                 }
             }
         })

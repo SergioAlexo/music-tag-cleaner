@@ -77,6 +77,16 @@ fn open_store(path: &Path) -> Result<Connection, String> {
     let _ = conn.pragma_update(None, "synchronous", "NORMAL");
     let _ = conn.busy_timeout(Duration::from_secs(10));
     conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+    // Expired responses are never read again (`cache_get` filters them), so
+    // they only took up space: drop them the first time the store is opened
+    // in a session.
+    static PRUNED: std::sync::Once = std::sync::Once::new();
+    PRUNED.call_once(|| {
+        let _ = conn.execute(
+            "DELETE FROM http_cache WHERE fetched_at <= ?1",
+            params![now_secs() - CACHE_TTL_SECS],
+        );
+    });
     Ok(conn)
 }
 
@@ -161,17 +171,21 @@ async fn fetch_cached(store: &Path, url: &str, rate_limited: bool) -> Result<Opt
     if rate_limited {
         mb_throttle().await;
     }
+    let fetched = fetch(url).await?;
+    cache_put(store, url, fetched.as_deref().unwrap_or(&[]));
+    Ok(fetched)
+}
+
+/// GET returning the body, `Ok(None)` on 404, never cached.
+async fn fetch(url: &str) -> Result<Option<Vec<u8>>, String> {
     let resp = client()?.get(url).send().await.map_err(|e| format!("Network error: {e}"))?;
     if resp.status().as_u16() == 404 {
-        cache_put(store, url, &[]);
         return Ok(None);
     }
     if !resp.status().is_success() {
         return Err(format!("{} answered HTTP {}", host_of(url), resp.status()));
     }
-    let body = resp.bytes().await.map_err(|e| format!("Network error: {e}"))?.to_vec();
-    cache_put(store, url, &body);
-    Ok(Some(body))
+    Ok(Some(resp.bytes().await.map_err(|e| format!("Network error: {e}"))?.to_vec()))
 }
 
 fn host_of(url: &str) -> &str {
@@ -508,17 +522,18 @@ pub async fn artwork_search_deezer(app: AppHandle, artist: String, title: String
 /// quality settings. Returns the before/after pair for the undo history.
 #[tauri::command]
 pub async fn artwork_apply(
-    app: AppHandle,
     path: String,
     full_urls: Vec<String>,
     max_dim: u32,
     quality: u8,
 ) -> Result<ArtworkChange, String> {
-    let store = store_path(&app)?;
     let mut bytes = None;
     let mut last_err = String::from("No image address to try");
     for url in &full_urls {
-        match fetch_cached(&store, url, false).await {
+        // Not cached: a full-size cover is embedded once and never looked up
+        // again, and caching each one grew artwork.sqlite by hundreds of KB
+        // per track - gigabytes after a library-wide auto-pick.
+        match fetch(url).await {
             Ok(Some(b)) if image::guess_format(&b).is_ok() => {
                 bytes = Some(b);
                 break;

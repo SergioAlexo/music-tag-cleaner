@@ -241,27 +241,48 @@ fn now_string() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-/// Copies the database (and its -wal, when present) to
+/// Writes a complete, self-contained copy of the database to
 /// `mixxxdb.sqlite.mtc-backup-<timestamp>` beside it and keeps only the ten
 /// newest such backups.
+///
+/// `VACUUM INTO` rather than a file copy: changes Mixxx left in its `-wal`
+/// file are part of the database but not of the main file, so a plain copy
+/// silently missed them - and restoring it lost them. The plain copy (main
+/// file plus `-wal` beside it) is only the fallback.
 pub fn backup(db: &Path) -> Result<PathBuf, String> {
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let name = db.file_name().and_then(|n| n.to_str()).unwrap_or("mixxxdb.sqlite");
     let dir = db.parent().ok_or("Mixxx database has no folder")?;
     let dest = dir.join(format!("{name}.mtc-backup-{stamp}"));
-    std::fs::copy(db, &dest).map_err(|e| format!("Couldn't back up Mixxx's database first: {e}"))?;
+    let snapshot = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .and_then(|c| c.execute("VACUUM INTO ?1", [dest.to_string_lossy().as_ref()]).map(|_| ()));
+    if snapshot.is_err() {
+        let _ = std::fs::remove_file(&dest);
+        std::fs::copy(db, &dest).map_err(|e| format!("Couldn't back up Mixxx's database first: {e}"))?;
+        let wal = PathBuf::from(format!("{}-wal", db.display()));
+        if wal.is_file() {
+            std::fs::copy(&wal, format!("{}-wal", dest.display()))
+                .map_err(|e| format!("Couldn't back up Mixxx's database first: {e}"))?;
+        }
+    }
     let prefix = format!("{name}.mtc-backup-");
     let mut old: Vec<PathBuf> = std::fs::read_dir(dir)
         .map(|rd| {
             rd.flatten()
                 .map(|e| e.path())
-                .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(&prefix)))
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with(&prefix) && !n.ends_with("-wal"))
+                })
                 .collect()
         })
         .unwrap_or_default();
     old.sort();
     while old.len() > 10 {
-        let _ = std::fs::remove_file(old.remove(0));
+        let gone = old.remove(0);
+        let _ = std::fs::remove_file(format!("{}-wal", gone.display()));
+        let _ = std::fs::remove_file(gone);
     }
     Ok(dest)
 }
@@ -540,6 +561,29 @@ pub(crate) mod tests {
         assert_eq!(sm.count, 2);
         // Auto DJ and history stay hidden from the tree.
         assert!(snap.nodes.iter().all(|n| n.name != "Auto DJ" && n.name != "2025-12-24"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The backup has to hold what Mixxx left in its write-ahead log too, or
+    /// restoring it silently loses those changes.
+    #[test]
+    fn the_backup_includes_changes_still_in_the_wal() {
+        let (d, db) = scratch_db("walbackup");
+        let live = Connection::open(&db).unwrap();
+        live.pragma_update(None, "journal_mode", "WAL").unwrap();
+        // Keep the change in the -wal: no checkpoint while this connection lives.
+        live.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        live.execute("INSERT INTO crates (name) VALUES ('only in the wal')", []).unwrap();
+        assert!(std::fs::metadata(format!("{}-wal", db.display())).map(|m| m.len() > 0).unwrap_or(false));
+
+        let dest = backup(&db).unwrap();
+        drop(live);
+        let copy = Connection::open_with_flags(&dest, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let n: i64 = copy
+            .query_row("SELECT COUNT(*) FROM crates WHERE name = 'only in the wal'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "the backup lost a change that was only in the -wal");
+        drop(copy);
         let _ = std::fs::remove_dir_all(&d);
     }
 
