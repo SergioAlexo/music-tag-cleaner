@@ -21,7 +21,7 @@ requests mean this one.
 |---|---|
 | App shell, toasts/logs (`notify`), routing | `src/App.tsx`, `src/pages/LogsPage.tsx` |
 | Track table (virtualized >60 rows) | `src/components/TrackTable.tsx`, `src/hooks/useVirtualRows.ts` |
-| Settings + migrations (`CURRENT_SETTINGS_VERSION`) | `src/hooks/useSettings.ts` — bump + add a migration step for any settings shape change |
+| Settings + migrations (`CURRENT_SETTINGS_VERSION`) | `src/hooks/useSettings.ts` — bump + add a migration step for any settings shape change; every save also lands in `settings.backup.json` (`commands/settings_backup.rs`), restored when the store comes back empty |
 | Search (one implementation everywhere; reads tags, not visible columns) | `src/lib/trackSearch.ts` |
 | YouTube Music import page | `src/pages/YtMusicImportPage.tsx`, `src/components/LibrarySearchPanel.tsx` |
 | Playlist matcher / match log | `src/lib/ytMatch.ts` (+ tests), `src/lib/ytMatchLog.ts` |

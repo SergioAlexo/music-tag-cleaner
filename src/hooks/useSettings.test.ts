@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CURRENT_SETTINGS_VERSION, DEFAULT_SETTINGS, mergeWithDefaults, migrate } from "./useSettings";
+import { CURRENT_SETTINGS_VERSION, DEFAULT_SETTINGS, mergeWithDefaults, migrate, settingsFromBackup } from "./useSettings";
 import type { Settings } from "../types";
 
 describe("mergeWithDefaults", () => {
@@ -98,5 +98,19 @@ describe("migrate", () => {
     const kept = migrate({ ...old, themeId: "midnight", plugins: { a: { enabled: true, approvedHash: "x" } } }, 21);
     expect(kept.themeId).toBe("midnight");
     expect(kept.plugins.a.enabled).toBe(true);
+  });
+});
+
+describe("settingsFromBackup", () => {
+  it("reads the settings document a backup holds", () => {
+    expect(settingsFromBackup(JSON.stringify({ settings: { libraryFolder: "C:/Music" } }))).toEqual({
+      libraryFolder: "C:/Music",
+    });
+  });
+
+  it("offers nothing for a missing, empty, truncated or foreign file", () => {
+    for (const text of [null, undefined, "", '{"settings":{"libr', "[]", "{}", '{"settings":[1]}', '{"settings":null}']) {
+      expect(settingsFromBackup(text)).toBeNull();
+    }
   });
 });

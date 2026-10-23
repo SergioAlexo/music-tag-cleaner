@@ -164,6 +164,8 @@ fn main() {
         .manage(bridge::BridgeState::default())
         .invoke_handler(tauri::generate_handler![
             take_opened_files,
+            commands::settings_backup::settings_backup_write,
+            commands::settings_backup::settings_backup_read,
             bridge::bridge_set_enabled,
             bridge::bridge_status,
             bridge::bridge_respond,
