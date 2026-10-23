@@ -318,14 +318,15 @@ pub struct EntryMeta {
 /// Strips the trailing " - Topic" YouTube appends to auto-generated-audio
 /// upload channel names. Mirrors `stripTopicSuffix` in `src/lib/ytMatch.ts`.
 fn strip_topic_suffix(name: &str) -> String {
+    const SUFFIX: &str = "- topic";
     let trimmed = name.trim();
-    let lower = trimmed.to_lowercase();
-    if let Some(pos) = lower.rfind("- topic") {
-        if pos + "- topic".len() == lower.len() {
-            return trimmed[..pos].trim_end().to_string();
-        }
+    // Compared on the original string: byte offsets found in a lowercased copy
+    // don't line up once lowercasing changes a character's length ("İ"), and
+    // slicing with one cut the name wrong or panicked mid-character.
+    match trimmed.len().checked_sub(SUFFIX.len()).and_then(|at| Some((at, trimmed.get(at..)?))) {
+        Some((at, tail)) if tail.eq_ignore_ascii_case(SUFFIX) => trimmed[..at].trim_end().to_string(),
+        _ => trimmed.to_string(),
     }
-    trimmed.to_string()
 }
 
 /// Parses one `yt-dlp -j --skip-download` video result into `EntryMeta`.
@@ -597,7 +598,13 @@ pub async fn fetch_ytmusic_playlist(app: AppHandle, url: String) -> Result<Playl
     .map_err(|_| "yt-dlp task panicked".to_string())?
     .map_err(|e| format!("Could not run yt-dlp: {e}"))?;
 
-    if !output.status.success() {
+    // With `--ignore-errors` yt-dlp still exits non-zero when any entry failed
+    // (one removed or region-locked video), yet prints the playlist it did
+    // read. That is worth keeping: only a run with nothing usable on stdout is
+    // an error.
+    let raw = String::from_utf8_lossy(&output.stdout).to_string();
+    let parsed = parse_playlist_json(&raw).ok().filter(|r| !r.entries.is_empty());
+    if !output.status.success() && parsed.is_none() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let msg = stderr
             .lines()
@@ -608,9 +615,10 @@ pub async fn fetch_ytmusic_playlist(app: AppHandle, url: String) -> Result<Playl
             .to_string();
         return Err(format!("yt-dlp error: {msg}"));
     }
-
-    let raw = String::from_utf8_lossy(&output.stdout).to_string();
-    let result = parse_playlist_json(&raw)?;
+    let result = match parsed {
+        Some(r) => r,
+        None => parse_playlist_json(&raw)?,
+    };
     if result.entries.is_empty() {
         return Err("No tracks found in that playlist — is it public?".to_string());
     }
@@ -849,6 +857,19 @@ mod tests {
         let meta = parse_video_json(raw, "v1");
         assert_eq!(meta.channel.as_deref(), Some("Boris Brejcha"));
         assert!(meta.artists.is_empty());
+    }
+
+    /// Lowercasing "İ" adds a byte, which shifted the offset found in the
+    /// lowercased copy: the old code returned "İstanbul -" here, and could
+    /// panic when the shifted offset fell inside a character.
+    #[test]
+    fn the_topic_suffix_comes_off_names_with_any_characters() {
+        assert_eq!(strip_topic_suffix("İstanbul - Topic"), "İstanbul");
+        assert_eq!(strip_topic_suffix("Mød - TOPIC "), "Mød");
+        assert_eq!(strip_topic_suffix("Земфира - Topic"), "Земфира");
+        assert_eq!(strip_topic_suffix("Topic"), "Topic");
+        assert_eq!(strip_topic_suffix("- topic"), "");
+        assert_eq!(strip_topic_suffix("Grupo Topicão"), "Grupo Topicão");
     }
 
     #[test]

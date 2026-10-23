@@ -639,6 +639,9 @@ fn bucket_peaks(blocks: &[f32]) -> Vec<f32> {
         .collect()
 }
 
+/// Without the FFmpeg fallback; the app always passes its FFmpeg (or `None`)
+/// to `get_or_compute_waveform_with` itself.
+#[cfg(test)]
 fn get_or_compute_waveform(conn: &Connection, path: &str) -> Result<Vec<f32>, String> {
     get_or_compute_waveform_with(conn, path, None)
 }
@@ -885,6 +888,153 @@ fn classify_pair_real(
     } else {
         PairMatch::NoMatch
     }
+}
+
+// ---------------------------------------------------------------------------
+// Pairwise pre-check
+//
+// `match_fingerprints` costs a fresh concatenate + sort of both fingerprints
+// (~2,000 items) for every pair, and the all-pairs stage is O(n²) of those -
+// most of a scan's time on a big library, nearly all of it on a rescan whose
+// fingerprints are cached. Almost every pair is unrelated, so `could_match`
+// first answers a cheaper, *necessary* condition from data prepared once per
+// file. It never changes a result: it returns false only when
+// `classify_pair_real` would certainly say `NoMatch`, and every other pair
+// still goes through the real matcher (`prefilter_never_changes_a_result`).
+// ---------------------------------------------------------------------------
+
+/// The top bits of an item `match_fingerprints` aligns on (its `ALIGN_BITS`).
+const ALIGN_SHIFT: u32 = 20;
+const ALIGN_HASHES: usize = 1 << (32 - ALIGN_SHIFT);
+/// Fingerprints this long make `match_fingerprints` refuse (`OFFSET_MASK`).
+const ALIGN_MAX_ITEMS: usize = (1 << 19) - 1;
+
+/// One fingerprint's item positions grouped by alignment hash (a compressed
+/// row layout), so a pair's offset histogram is a single pass over the other
+/// fingerprint. Built once per row of the pairwise stage.
+pub(crate) struct AlignBuckets {
+    starts: Vec<u32>,
+    positions: Vec<u32>,
+}
+
+pub(crate) fn align_buckets(fp: &[u32]) -> AlignBuckets {
+    let mut starts = vec![0u32; ALIGN_HASHES + 1];
+    for &x in fp {
+        starts[(x >> ALIGN_SHIFT) as usize + 1] += 1;
+    }
+    for h in 0..ALIGN_HASHES {
+        starts[h + 1] += starts[h];
+    }
+    let mut next = starts.clone();
+    let mut positions = vec![0u32; fp.len()];
+    for (i, &x) in fp.iter().enumerate() {
+        let h = (x >> ALIGN_SHIFT) as usize;
+        positions[next[h] as usize] = i as u32;
+        next[h] += 1;
+    }
+    AlignBuckets { starts, positions }
+}
+
+/// Scratch buffers reused across one row of the pairwise stage.
+#[derive(Default)]
+struct PrecheckScratch {
+    hist: Vec<u32>,
+    touched: Vec<u32>,
+    prefix: Vec<i64>,
+}
+
+/// The alignment `match_fingerprints` would pick: its offset histogram
+/// (`hist[i + len(b) - j]` counts items i of `a`, j of `b` with the same
+/// alignment hash), then the highest count above 1, ties to the larger offset
+/// - exactly the peak its `best_alignments` sort puts first, since the global
+/// maximum is always one of its local peaks. `None` = no bin above 1, where it
+/// finds no segment at all. The maximum is tracked while counting, and only
+/// the touched bins are cleared afterwards.
+fn best_alignment(a: &AlignBuckets, a_len: usize, b: &[u32], scratch: &mut PrecheckScratch) -> Option<usize> {
+    let nb = b.len();
+    if scratch.hist.len() < a_len + nb {
+        scratch.hist.resize(a_len + nb, 0);
+    }
+    let (hist, touched) = (&mut scratch.hist, &mut scratch.touched);
+    let (mut best, mut best_count) = (None::<usize>, 1u32);
+    for (j, &y) in b.iter().enumerate() {
+        let h = (y >> ALIGN_SHIFT) as usize;
+        let (from, to) = (a.starts[h] as usize, a.starts[h + 1] as usize);
+        for &i in &a.positions[from..to] {
+            let d = i as usize + nb - j;
+            let c = hist[d] + 1;
+            if c == 1 {
+                touched.push(d as u32);
+            }
+            hist[d] = c;
+            if c > best_count || (c == best_count && best.is_some_and(|bd| d > bd)) {
+                best_count = c;
+                best = Some(d);
+            }
+        }
+    }
+    for d in touched.drain(..) {
+        hist[d as usize] = 0;
+    }
+    best
+}
+
+/// False only when `classify_pair_real(a, b, ..)` is certainly `NoMatch`.
+///
+/// Every match it can return needs its largest segment to score at most
+/// `DUPLICATE_SCORE_MAX` (the looser of the two score limits) and to cover at
+/// least `ALTERNATE_MIN_COVERAGE` of the longer fingerprint. Segments are
+/// contiguous runs of the per-item bit differences at the one alignment the
+/// matcher picks, and a segment's score is the mean over its run - so if no
+/// run that long has a mean that low, no segment can. Both limits are rounded
+/// the permissive way, so float rounding can only make this say "maybe".
+fn could_match(
+    a: &CachedFingerprint,
+    a_buckets: &AlignBuckets,
+    b: &CachedFingerprint,
+    config: &Configuration,
+    scratch: &mut PrecheckScratch,
+) -> bool {
+    let (fa, fb) = (&a.fingerprint, &b.fingerprint);
+    if fa.len() >= ALIGN_MAX_ITEMS || fb.len() >= ALIGN_MAX_ITEMS {
+        return true; // Out of the matcher's range: let it report that itself.
+    }
+    if fa.is_empty() || fb.is_empty() || a.duration_secs <= 0.0 || b.duration_secs <= 0.0 {
+        return false; // No items, or a zero coverage denominator: never a match.
+    }
+    let Some(d) = best_alignment(a_buckets, fa.len(), fb, scratch) else {
+        return false;
+    };
+    let shift = d as isize - fb.len() as isize;
+    let (off_a, off_b) = (shift.max(0) as usize, (-shift).max(0) as usize);
+    let size = (fa.len() - off_a).min(fb.len() - off_b);
+
+    let min_coverage = ALTERNATE_MIN_COVERAGE.min(DUPLICATE_MIN_COVERAGE);
+    let item_secs = config.item_duration_in_seconds() as f64;
+    let wanted = min_coverage * a.duration_secs.max(b.duration_secs) / item_secs;
+    let min_len = ((wanted * 0.999).floor() as usize).max(1);
+    if size < min_len {
+        return false;
+    }
+    // Is there a run of >= min_len items whose mean bit difference is
+    // <= max_score? With P = prefix sums of (bits - max_score): is there
+    // i <= j - min_len with P[j] <= P[i]?
+    let max_score = DUPLICATE_SCORE_MAX.max(ALTERNATE_SCORE_MAX).ceil() as i64;
+    let p = &mut scratch.prefix;
+    p.clear();
+    p.push(0);
+    for k in 0..size {
+        let bits = (fa[off_a + k] ^ fb[off_b + k]).count_ones() as i64;
+        p.push(p[k] + bits - max_score);
+    }
+    let mut highest_start = i64::MIN;
+    for j in min_len..=size {
+        highest_start = highest_start.max(p[j - min_len]);
+        if p[j] <= highest_start {
+            return true;
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -1371,12 +1521,17 @@ fn scan_duplicates_core(
             let i = candidates[ci];
             let (_, fa) = &fingerprints[i];
             let mut found = Vec::new();
+            let buckets = align_buckets(&fa.fingerprint);
+            let mut scratch = PrecheckScratch::default();
             for &j in candidates.iter().skip(ci + 1) {
                 let (_, fb) = &fingerprints[j];
                 let longer = fa.duration_secs.max(fb.duration_secs);
                 let shorter = fa.duration_secs.min(fb.duration_secs);
                 if longer <= 0.0 || shorter / longer < 0.30 {
                     continue; // durations too far apart to plausibly be related
+                }
+                if !could_match(fa, &buckets, fb, &config, &mut scratch) {
+                    continue;
                 }
                 match classify_pair_real(fa, fb, &config, real_duration(i, j)) {
                     PairMatch::NoMatch => {}
@@ -1944,6 +2099,141 @@ mod tests {
             out.extend(sine_pcm(freq, sample_rate, seconds_per_note));
         }
         out
+    }
+
+    /// The pre-check is only worth having if it never changes an answer:
+    /// whenever it skips a pair, the real matcher must say `NoMatch`, and its
+    /// alignment must be the one `match_fingerprints` actually segments on.
+    /// Checked over identical, noisy, shifted, truncated, low-entropy and
+    /// unrelated fingerprints - random ones, and real chroma fingerprints of
+    /// synthetic melodies (structured the way music is).
+    #[test]
+    fn prefilter_never_changes_a_result() {
+        let config = fingerprint_config();
+        let item_secs = config.item_duration_in_seconds() as f64;
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let fp_of = |items: Vec<u32>| CachedFingerprint {
+            blake3: String::new(),
+            duration_secs: items.len() as f64 * item_secs,
+            sample_rate: 44_100,
+            fingerprint: items,
+        };
+
+        let mut bases: Vec<Vec<u32>> = (0..10)
+            .map(|_| {
+                let n = 150 + (rnd() % 900) as usize;
+                (0..n).map(|_| rnd() as u32).collect()
+            })
+            .collect();
+        let sr = 11_025;
+        for notes in [
+            &[261.63, 329.63, 392.0, 523.25, 440.0, 349.23][..],
+            &[220.0, 246.94, 261.63, 293.66, 329.63][..],
+            &[196.0, 174.61, 164.81, 261.63, 329.63, 392.0, 523.25][..],
+        ] {
+            bases.push(compute_fingerprint(&melody_pcm(notes, sr, 3.0), sr, 1).unwrap());
+        }
+
+        let mut fps: Vec<CachedFingerprint> = Vec::new();
+        for base in &bases {
+            let n = base.len();
+            for flips in [0u32, 2, 5, 9, 14] {
+                let noisy = base
+                    .iter()
+                    .map(|&x| (0..flips).fold(x, |y, _| y ^ (1 << (rnd() % 32))))
+                    .collect();
+                fps.push(fp_of(noisy));
+            }
+            fps.push(fp_of(base[n / 3..].to_vec()));
+            fps.push(fp_of(base[..n - n / 3].to_vec()));
+            fps.push(fp_of(base[n / 4..n - n / 4].to_vec()));
+            fps.push(fp_of((0..n).map(|i| base[i % 7]).collect()));
+        }
+        fps.push(fp_of(Vec::new()));
+
+        let buckets: Vec<AlignBuckets> = fps.iter().map(|f| align_buckets(&f.fingerprint)).collect();
+        let mut scratch = PrecheckScratch::default();
+        let (mut pairs, mut skipped, mut matched) = (0, 0, 0);
+        for i in 0..fps.len() {
+            for j in (i + 1)..fps.len() {
+                pairs += 1;
+                let (a, b) = (&fps[i], &fps[j]);
+                if let Ok(segments) = match_fingerprints(&a.fingerprint, &b.fingerprint, &config) {
+                    if let Some(s) = segments.first() {
+                        let d = best_alignment(&buckets[i], a.fingerprint.len(), &b.fingerprint, &mut scratch)
+                            .expect("matcher found segments, so an alignment exists");
+                        let shift = d as isize - b.fingerprint.len() as isize;
+                        assert_eq!(s.offset1 as isize - s.offset2 as isize, shift, "alignment differs ({i}, {j})");
+                    }
+                }
+                let maybe = could_match(a, &buckets[i], b, &config, &mut scratch);
+                for real in [None, Some((a.duration_secs, b.duration_secs)), Some((a.duration_secs, b.duration_secs * 3.0))] {
+                    let m = classify_pair_real(a, b, &config, real);
+                    if !maybe {
+                        assert!(matches!(m, PairMatch::NoMatch), "pre-check skipped a real match ({i}, {j})");
+                    } else if !matches!(m, PairMatch::NoMatch) {
+                        matched += 1;
+                    }
+                }
+                skipped += (!maybe) as usize;
+            }
+        }
+        assert!(matched > 0, "the fixtures should contain real matches");
+        // And it has to skip most unrelated pairs to be worth the code.
+        assert!(skipped * 10 > pairs * 7, "only skipped {skipped} of {pairs} pairs");
+    }
+
+    /// Timing of the all-pairs stage with and without the pre-check, on
+    /// fingerprints the size of real ones (~120 s analysed). Opt-in:
+    ///   cargo test --release prefilter_speed -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn prefilter_speed() {
+        let config = fingerprint_config();
+        let mut seed = 42u64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let fps: Vec<CachedFingerprint> = (0..400)
+            .map(|_| CachedFingerprint {
+                blake3: String::new(),
+                fingerprint: (0..970).map(|_| rnd() as u32).collect(),
+                duration_secs: 120.0,
+                sample_rate: 44_100,
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        let mut plain = 0;
+        for i in 0..fps.len() {
+            for j in (i + 1)..fps.len() {
+                plain += !matches!(classify_pair_real(&fps[i], &fps[j], &config, None), PairMatch::NoMatch) as usize;
+            }
+        }
+        let t_plain = started.elapsed();
+        let started = std::time::Instant::now();
+        let mut scratch = PrecheckScratch::default();
+        let mut filtered = 0;
+        for i in 0..fps.len() {
+            let buckets = align_buckets(&fps[i].fingerprint);
+            for j in (i + 1)..fps.len() {
+                if could_match(&fps[i], &buckets, &fps[j], &config, &mut scratch) {
+                    filtered +=
+                        !matches!(classify_pair_real(&fps[i], &fps[j], &config, None), PairMatch::NoMatch) as usize;
+                }
+            }
+        }
+        let t_filtered = started.elapsed();
+        println!("{} pairs: plain {t_plain:?}, with pre-check {t_filtered:?}", fps.len() * (fps.len() - 1) / 2);
+        assert_eq!(plain, filtered);
     }
 
     #[test]

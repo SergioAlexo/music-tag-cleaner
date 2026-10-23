@@ -46,8 +46,13 @@ fn window(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window(LABEL)
 }
 
+// The commands that create or move the window are `async` on purpose: Tauri
+// runs a synchronous command on the main thread, and on Windows building a
+// webview window from there deadlocks inside WebView2 (see the "Known issues"
+// on `WebviewWindowBuilder::new`) - the whole app would freeze on "Open".
+
 #[tauri::command]
-pub fn lyrics_output_open(app: AppHandle) -> Result<(), String> {
+pub async fn lyrics_output_open(app: AppHandle) -> Result<(), String> {
     if let Some(w) = window(&app) {
         let _ = w.show();
         w.set_focus().map_err(|e| e.to_string())?;
@@ -66,8 +71,15 @@ pub fn lyrics_output_open(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn lyrics_output_close(app: AppHandle) -> Result<(), String> {
-    if let Some(w) = window(&app) {
+pub async fn lyrics_output_close(app: AppHandle) -> Result<(), String> {
+    close(&app)
+}
+
+/// Also called when the main window closes: on its own the output window has
+/// nothing to show (its lines come from the main window), and left open it
+/// kept the app running - often fullscreen on a projector.
+pub fn close(app: &AppHandle) -> Result<(), String> {
+    if let Some(w) = window(app) {
         w.destroy().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -79,8 +91,12 @@ pub fn lyrics_output_is_open(app: AppHandle) -> bool {
 }
 
 #[tauri::command]
-pub fn lyrics_output_monitors(app: AppHandle) -> Result<Vec<MonitorInfo>, String> {
-    let w = window(&app).ok_or("The lyrics output window is not open")?;
+pub async fn lyrics_output_monitors(app: AppHandle) -> Result<Vec<MonitorInfo>, String> {
+    monitors(&app)
+}
+
+fn monitors(app: &AppHandle) -> Result<Vec<MonitorInfo>, String> {
+    let w = window(app).ok_or("The lyrics output window is not open")?;
     let primary = w.primary_monitor().ok().flatten().map(|m| *m.position());
     let list = w.available_monitors().map_err(|e| e.to_string())?;
     Ok(list
@@ -100,9 +116,9 @@ pub fn lyrics_output_monitors(app: AppHandle) -> Result<Vec<MonitorInfo>, String
 
 /// Moves the window onto monitor `index` and (optionally) makes it fullscreen there.
 #[tauri::command]
-pub fn lyrics_output_place(app: AppHandle, index: usize, fullscreen: bool) -> Result<(), String> {
+pub async fn lyrics_output_place(app: AppHandle, index: usize, fullscreen: bool) -> Result<(), String> {
     let w = window(&app).ok_or("The lyrics output window is not open")?;
-    let monitors = lyrics_output_monitors(app.clone())?;
+    let monitors = monitors(&app)?;
     let mon = monitors.get(index).ok_or("That monitor is no longer connected")?;
     // Leave fullscreen first: a fullscreen window cannot be moved to another screen.
     let _ = w.set_fullscreen(false);
@@ -116,7 +132,7 @@ pub fn lyrics_output_place(app: AppHandle, index: usize, fullscreen: bool) -> Re
 }
 
 #[tauri::command]
-pub fn lyrics_output_fullscreen(app: AppHandle, on: bool) -> Result<(), String> {
+pub async fn lyrics_output_fullscreen(app: AppHandle, on: bool) -> Result<(), String> {
     let w = window(&app).ok_or("The lyrics output window is not open")?;
     w.set_fullscreen(on).map_err(|e| e.to_string())
 }

@@ -194,9 +194,11 @@ pub async fn plugins_http(
     }
     let resp = req.send().await.map_err(|e| format!("Request failed: {e}"))?;
     let status = resp.status();
-    let bytes = resp.bytes().await.map_err(|e| format!("Request failed: {e}"))?;
-    let slice = &bytes[..bytes.len().min(1_000_000)];
-    Ok(HttpReply { status: status.as_u16(), ok: status.is_success(), body: String::from_utf8_lossy(slice).to_string() })
+    // The first 1 MB, as before - but read only that far, not buffered whole.
+    let (bytes, _) = super::download::read_body_capped(resp, 1_000_000)
+        .await
+        .map_err(|e| e.replace("Download failed", "Request failed"))?;
+    Ok(HttpReply { status: status.as_u16(), ok: status.is_success(), body: String::from_utf8_lossy(&bytes).to_string() })
 }
 
 #[cfg(test)]

@@ -33,6 +33,10 @@ pub struct ConvertOutcome {
 
 struct Preset {
     ext: &'static str,
+    /// FFmpeg's muxer for `ext`, passed explicitly so the output can go to a
+    /// temporary name FFmpeg couldn't guess a format from (see `convert_one`).
+    /// `ipod` is the one FFmpeg itself picks for `.m4a`.
+    muxer: &'static str,
     codec_args: &'static [&'static str],
     /// Whether the target container can carry the embedded cover art through
     /// FFmpeg's video stream ( `-c:v copy` ). Off for wav/aiff/ogg/opus.
@@ -41,15 +45,15 @@ struct Preset {
 
 fn preset(name: &str) -> Result<Preset, String> {
     Ok(match name {
-        "mp3-320" => Preset { ext: "mp3", codec_args: &["-c:a", "libmp3lame", "-b:a", "320k"], copy_art: true },
-        "mp3-v0" => Preset { ext: "mp3", codec_args: &["-c:a", "libmp3lame", "-q:a", "0"], copy_art: true },
-        "flac" => Preset { ext: "flac", codec_args: &["-c:a", "flac"], copy_art: true },
-        "alac" => Preset { ext: "m4a", codec_args: &["-c:a", "alac"], copy_art: true },
-        "aac-256" => Preset { ext: "m4a", codec_args: &["-c:a", "aac", "-b:a", "256k"], copy_art: true },
-        "wav" => Preset { ext: "wav", codec_args: &["-c:a", "pcm_s16le"], copy_art: false },
-        "aiff" => Preset { ext: "aiff", codec_args: &["-c:a", "pcm_s16be"], copy_art: false },
-        "ogg-q8" => Preset { ext: "ogg", codec_args: &["-c:a", "libvorbis", "-q:a", "8"], copy_art: false },
-        "opus-192" => Preset { ext: "opus", codec_args: &["-c:a", "libopus", "-b:a", "192k"], copy_art: false },
+        "mp3-320" => Preset { ext: "mp3", muxer: "mp3", codec_args: &["-c:a", "libmp3lame", "-b:a", "320k"], copy_art: true },
+        "mp3-v0" => Preset { ext: "mp3", muxer: "mp3", codec_args: &["-c:a", "libmp3lame", "-q:a", "0"], copy_art: true },
+        "flac" => Preset { ext: "flac", muxer: "flac", codec_args: &["-c:a", "flac"], copy_art: true },
+        "alac" => Preset { ext: "m4a", muxer: "ipod", codec_args: &["-c:a", "alac"], copy_art: true },
+        "aac-256" => Preset { ext: "m4a", muxer: "ipod", codec_args: &["-c:a", "aac", "-b:a", "256k"], copy_art: true },
+        "wav" => Preset { ext: "wav", muxer: "wav", codec_args: &["-c:a", "pcm_s16le"], copy_art: false },
+        "aiff" => Preset { ext: "aiff", muxer: "aiff", codec_args: &["-c:a", "pcm_s16be"], copy_art: false },
+        "ogg-q8" => Preset { ext: "ogg", muxer: "ogg", codec_args: &["-c:a", "libvorbis", "-q:a", "8"], copy_art: false },
+        "opus-192" => Preset { ext: "opus", muxer: "opus", codec_args: &["-c:a", "libopus", "-b:a", "192k"], copy_art: false },
         other => return Err(format!("Unknown convert preset: {other}")),
     })
 }
@@ -92,8 +96,18 @@ fn ffmpeg_args(name: &str, src: &Path, dst: &Path) -> Result<Vec<String>, String
         args.push("-id3v2_version".into());
         args.push("3".into());
     }
+    args.push("-f".into());
+    args.push(p.muxer.into());
     args.push(dst.to_string_lossy().into_owned());
     Ok(args)
+}
+
+/// Where FFmpeg writes before the result is published under `dst`: a name no
+/// library scan takes for a track, beside `dst` so publishing is a rename.
+fn part_path(dst: &Path) -> PathBuf {
+    let mut name = dst.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(".mtc-part");
+    dst.with_file_name(name)
 }
 
 fn dst_path(src: &Path, ext: &str, subfolder: bool) -> PathBuf {
@@ -134,7 +148,12 @@ fn convert_one(
         }
     }
 
-    let args = match ffmpeg_args(preset_name, src, &dst) {
+    // FFmpeg writes to a temporary name that is renamed into place only once it
+    // has finished. Written straight to `dst`, a failure (or the app closing)
+    // left a truncated file behind under a real track name, and a failed
+    // overwrite deleted the earlier, good conversion along with it.
+    let part = part_path(&dst);
+    let args = match ffmpeg_args(preset_name, src, &part) {
         Ok(a) => a,
         Err(e) => return failed(src_str, e),
     };
@@ -154,8 +173,16 @@ fn convert_one(
             .unwrap_or("ffmpeg failed")
             .trim()
             .to_string();
-        let _ = std::fs::remove_file(&dst); // don't leave a half-written file
+        let _ = std::fs::remove_file(&part);
         return failed(src_str, format!("ffmpeg: {msg}"));
+    }
+    if dst.exists() && !overwrite {
+        let _ = std::fs::remove_file(&part);
+        return failed(src_str, format!("{} appeared while converting; not overwriting it", dst.display()));
+    }
+    if let Err(e) = std::fs::rename(&part, &dst) {
+        let _ = std::fs::remove_file(&part);
+        return failed(src_str, format!("could not save {}: {e}", dst.display()));
     }
 
     let dst_str = dst.to_string_lossy().to_string();
@@ -210,21 +237,42 @@ pub async fn convert_files(
     overwrite: bool,
 ) -> Result<Vec<ConvertOutcome>, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
         let ffmpeg = find_ffmpeg(&app).ok_or_else(|| {
             "FFmpeg is not installed — install it on the Components page first.".to_string()
         })?;
+        let ext = preset_ext(&preset)?;
         let total = paths.len();
-        let mut results = Vec::with_capacity(total);
-        for (i, src) in paths.iter().enumerate() {
-            let _ = app.emit(
-                "convert-progress",
-                serde_json::json!({ "done": i, "total": total, "file": src }),
-            );
-            results.push(convert_one(&ffmpeg, &preset, src, subfolder, overwrite));
-        }
-        let _ = app.emit(
-            "convert-progress",
-            serde_json::json!({ "done": total, "total": total, "file": serde_json::Value::Null }),
+        // Two sources that would land on one output name ("Song.flac" and
+        // "Song.wav" -> "Song.mp3") can't both convert, now that conversions
+        // run side by side: the later one is refused, as it was when the first
+        // had already finished.
+        let mut claimed = std::collections::HashSet::new();
+        let clash: Vec<bool> = paths
+            .iter()
+            .map(|p| !claimed.insert(dst_path(Path::new(p), ext, subfolder).to_string_lossy().to_lowercase()))
+            .collect();
+        let jobs: Vec<(&String, bool)> = paths.iter().zip(clash).collect();
+        let _ = app.emit("convert-progress", serde_json::json!({ "done": 0, "total": total, "file": serde_json::Value::Null }));
+        let done = AtomicUsize::new(0);
+        // Every FFmpeg encoder used here runs on one core, so a few at once is
+        // close to that many times faster; more than four mostly fights over
+        // the disk.
+        let results = crate::commands::files::par_map_on(
+            &jobs,
+            crate::commands::files::worker_threads().min(4),
+            |&(src, clash)| {
+                let outcome = if clash {
+                    failed(src, "another file in this batch converts to the same name".to_string())
+                } else {
+                    convert_one(&ffmpeg, &preset, src, subfolder, overwrite)
+                };
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                let _ = app.emit("convert-progress", serde_json::json!({ "done": n, "total": total, "file": src }));
+                outcome
+            },
+            |&(src, _)| failed(src, crate::commands::files::CRASHED.to_string()),
         );
         Ok(results)
     })
@@ -258,7 +306,84 @@ mod tests {
         assert!(args.windows(2).any(|w| w == ["-b:a", "320k"]));
         assert!(args.windows(2).any(|w| w == ["-id3v2_version", "3"]));
         assert!(args.windows(2).any(|w| w == ["-c:v", "copy"]));
+        assert!(args.windows(2).any(|w| w == ["-f", "mp3"]));
         assert!(!args.iter().any(|a| a == "-vn"));
+        // m4a is FFmpeg's `ipod` muxer, which it can no longer infer from a
+        // temporary file name.
+        assert!(ffmpeg_args("alac", src, Path::new("/music/a.m4a.mtc-part"))
+            .unwrap()
+            .windows(2)
+            .any(|w| w == ["-f", "ipod"]));
+        assert_eq!(part_path(dst), PathBuf::from("/music/a.mp3.mtc-part"));
+    }
+
+    /// End to end with a real FFmpeg, when one is installed: a conversion is
+    /// published under its final name with no temporary file left, and a
+    /// failed one leaves an existing earlier output untouched.
+    #[test]
+    fn a_conversion_publishes_atomically_with_real_ffmpeg() {
+        let Some(ffmpeg) = crate::commands::ffmpeg::on_path(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" }) else {
+            eprintln!("no FFmpeg on PATH; skipping");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("mtc-convert-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // One second of a 440 Hz tone as a 16-bit mono WAV.
+        let src = dir.join("tone.wav");
+        let pcm: Vec<u8> = (0..8000)
+            .flat_map(|i| (((i as f64 / 8000.0 * 440.0 * std::f64::consts::TAU).sin() * 12000.0) as i16).to_le_bytes())
+            .collect();
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + pcm.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        for v in [16u32.to_le_bytes(), [1, 0, 1, 0], 8000u32.to_le_bytes(), 16000u32.to_le_bytes(), [2, 0, 16, 0]] {
+            wav.extend_from_slice(&v);
+        }
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&pcm);
+        std::fs::write(&src, wav).unwrap();
+        let src = src.to_string_lossy().to_string();
+
+        // Every preset's explicit muxer must produce a file lofty can read -
+        // for each encoder this FFmpeg build actually has (minimal builds,
+        // a CI runner's for one, may lack libopus or libvorbis).
+        let encoders = Command::new(&ffmpeg)
+            .args(["-hide_banner", "-encoders"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        for preset in ["mp3-320", "mp3-v0", "alac", "aac-256", "aiff", "ogg-q8", "opus-192", "wav"] {
+            let codec = super::preset(preset).unwrap().codec_args[1];
+            if !encoders.split_whitespace().any(|w| w == codec) {
+                eprintln!("{preset}: this FFmpeg has no {codec} encoder; skipping");
+                continue;
+            }
+            let r = convert_one(&ffmpeg, preset, &src, true, true);
+            assert!(r.ok, "{preset}: {:?}", r.error);
+            let out = PathBuf::from(r.output.unwrap());
+            assert!(read_tags_impl(&out.to_string_lossy()).is_ok(), "{preset}: unreadable output");
+            assert!(!part_path(&out).exists(), "{preset}: temporary file left behind");
+        }
+
+        let ok = convert_one(&ffmpeg, "flac", &src, false, false);
+        assert!(ok.ok, "{:?}", ok.error);
+        let out = PathBuf::from(ok.output.unwrap());
+        assert!(out.is_file() && !part_path(&out).exists());
+
+        // A broken source converting to that same name with overwrite on:
+        // FFmpeg fails, and the earlier output must survive it.
+        assert_eq!(out, dir.join("tone.flac"));
+        let before = std::fs::read(&out).unwrap();
+        let broken = dir.join("tone.mp3");
+        std::fs::write(&broken, b"not audio").unwrap();
+        let bad = convert_one(&ffmpeg, "flac", &broken.to_string_lossy(), false, true);
+        assert!(!bad.ok);
+        assert_eq!(std::fs::read(dir.join("tone.flac")).unwrap(), before);
+        assert!(!part_path(&dir.join("tone.flac")).exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

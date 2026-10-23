@@ -83,7 +83,8 @@ export interface AppEnv {
     editRawField: (paths: string[], rawKey: string, value: string) => Promise<unknown> | void;
     editRating: (paths: string[], stars: number) => Promise<unknown> | void;
     deleteFile: (file: AudioFile) => Promise<unknown> | void;
-    deleteDuplicates: (paths: string[]) => Promise<boolean>;
+    /** Resolves to the paths that actually went to the Recycle Bin. */
+    deleteDuplicates: (paths: string[]) => Promise<string[]>;
     backup: () => Promise<unknown> | void;
     restoreBackup: () => Promise<unknown> | void;
     backupArchive: () => Promise<unknown> | void;
@@ -692,7 +693,10 @@ export function registerAppActions(reg: ActionRegistry, get: () => AppEnv): void
     params: obj({ paths: paths() }, ["paths"]),
     dangerous: true,
     confirmsItself: true,
-    run: async (p: { paths: string[] }) => ({ deleted: await env().h.deleteDuplicates(p.paths) }),
+    run: async (p: { paths: string[] }) => {
+      const removed = await env().h.deleteDuplicates(p.paths);
+      return { deleted: removed.length > 0, removed: removed.length };
+    },
   });
 
   reg.register({

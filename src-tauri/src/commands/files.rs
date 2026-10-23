@@ -1,9 +1,9 @@
 use std::path::Path;
 use std::time::Duration;
 
-use lofty::config::WriteOptions;
-// Imported unnamed so `save_to_path` is in scope without clashing with our
-// own `AudioFile` model struct.
+use lofty::config::{ParseOptions, WriteOptions};
+// Imported unnamed so `save_to` is in scope without clashing with our own
+// `AudioFile` model struct.
 use lofty::file::AudioFile as _;
 use lofty::prelude::*;
 use lofty::tag::{ItemKey, ItemValue, Tag, TagItem, TagType};
@@ -11,6 +11,7 @@ use tauri::Emitter;
 use walkdir::WalkDir;
 
 use crate::commands::backup::{find_backup_in_file, make_backup_string, BACKUP_KEY};
+use crate::commands::safe_save::{edit_file, WorkingCopy};
 use crate::models::{
     AudioFile, ContainerSweepResult, CoverThumbnail, ImageInfo, ImageInfoResult, TagData,
     TagReadResult, WriteProgress, WriteRawFieldItem, WriteResult, WriteTagsItem,
@@ -89,7 +90,7 @@ where
 /// anything smaller than an 8-core machine and saturated the rest, starving
 /// the webview's own rendering — a long batch made the window itself feel
 /// frozen, which is worse than the batch taking slightly longer.
-fn worker_threads() -> usize {
+pub(crate) fn worker_threads() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get().saturating_sub(1))
         .unwrap_or(4)
@@ -126,13 +127,25 @@ pub(crate) fn par_map<T: Sync, R: Send>(
     f: impl Fn(&T) -> R + Sync,
     on_panic: impl Fn(&T) -> R + Sync,
 ) -> Vec<R> {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     if items.len() <= 16 {
         return items.iter().map(|item| guarded(item, &f, &on_panic)).collect();
     }
+    par_map_on(items, worker_threads(), f, on_panic)
+}
+
+/// `par_map` on at most `threads` threads, with no small-input shortcut: for
+/// work where even two items are worth running side by side (an FFmpeg
+/// transcode takes seconds).
+pub(crate) fn par_map_on<T: Sync, R: Send>(
+    items: &[T],
+    threads: usize,
+    f: impl Fn(&T) -> R + Sync,
+    on_panic: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     let next = AtomicUsize::new(0);
-    let threads = worker_threads().min(items.len());
+    let threads = threads.clamp(1, items.len().max(1));
     let mut slots: Vec<Option<R>> = std::iter::repeat_with(|| None).take(items.len()).collect();
     std::thread::scope(|s| {
         let workers: Vec<_> = (0..threads)
@@ -877,27 +890,38 @@ fn repair_item_languages(tag: &mut Tag) {
     }
 }
 
-/// Saves `tag` to `path`, applying `rating` (stars; `None` leaves the rating
-/// alone). ID3v2 goes through `Id3v2Tag` so its POPM frames can be edited in
-/// place — they live in the tag's format-specific companion, out of reach of
-/// the generic API.
-fn save_tag(mut tag: Tag, rating: Option<u8>, path: &str) -> Result<(), String> {
+/// Saves `tag` into the working copy, applying `rating` (stars; `None` leaves
+/// the rating alone). ID3v2 goes through `Id3v2Tag` so its POPM frames can be
+/// edited in place — they live in the tag's format-specific companion, out of
+/// reach of the generic API.
+fn save_tag(mut tag: Tag, rating: Option<u8>, work: &mut WorkingCopy) -> Result<(), String> {
     repair_item_languages(&mut tag);
+    work.rewind_to_start()?;
     if tag.tag_type() == TagType::Id3v2 {
         let mut id3: lofty::id3::v2::Id3v2Tag = tag.into();
         if let Some(stars) = rating {
             set_popm_rating(&mut id3, stars);
         }
-        return id3
-            .save_to_path(path, WriteOptions::default())
-            .map_err(|e| e.to_string());
+        return id3.save_to(work, WriteOptions::default()).map_err(|e| e.to_string());
     }
     let mut tag = tag;
     if let Some(stars) = rating {
         set_text_rating(&mut tag, stars);
     }
-    tag.save_to_path(path, WriteOptions::default())
-        .map_err(|e| e.to_string())
+    tag.save_to(work, WriteOptions::default()).map_err(|e| e.to_string())
+}
+
+/// Saves every tag of `tagged` back into the working copy (the `save_to_path`
+/// of a whole parsed file).
+fn save_tagged(tagged: &lofty::file::TaggedFile, work: &mut WorkingCopy) -> Result<(), String> {
+    work.rewind_to_start()?;
+    tagged.save_to(work, WriteOptions::default()).map_err(|e| e.to_string())
+}
+
+/// Strips one whole tag container (ID3v1, APE, ...) from the working copy.
+fn remove_container(tag_type: TagType, work: &mut WorkingCopy) -> Result<(), String> {
+    work.rewind_to_start()?;
+    tag_type.remove_from(work).map_err(|e| e.to_string())
 }
 
 pub(crate) fn write_tags_blocking(
@@ -908,7 +932,19 @@ pub(crate) fn write_tags_blocking(
     preserve_art: bool,
     backup_field: Option<String>,
 ) -> Result<(), String> {
-    let mut tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
+    edit_file(path, |work| write_tags_into(work, path, tags, backup, keep_extra, preserve_art, backup_field))
+}
+
+fn write_tags_into(
+    work: &mut WorkingCopy,
+    path: &str,
+    tags: TagData,
+    backup: bool,
+    keep_extra: Vec<String>,
+    preserve_art: bool,
+    backup_field: Option<String>,
+) -> Result<(), String> {
+    let mut tagged = work.parse(path, ParseOptions::default())?;
     // Always the format's canonical tag, so fields aren't lost to a limited
     // secondary tag (e.g. ID3v1) that happened to be present.
     let tag_type = tagged.file_type().primary_tag_type();
@@ -1036,13 +1072,12 @@ pub(crate) fn write_tags_blocking(
     }
 
     // 6. Drop secondary tag formats (ID3v1, APE, ...) so stripped fields
-    // cannot linger in them.
+    // cannot linger in them. All of this lands in one replace of the file, so
+    // a save that fails below can no longer leave them already deleted.
     for tt in other_types {
-        Tag::new(tt)
-            .remove_from_path(path)
-            .map_err(|e| e.to_string())?;
+        remove_container(tt, work)?;
     }
-    save_tag(tag, tags.rating, path)
+    save_tag(tag, tags.rating, work)
 }
 
 /// Writes many files in one call, across `par_map`'s threads.
@@ -1183,7 +1218,11 @@ pub async fn write_raw_field(path: String, field_key: String, value: String) -> 
 }
 
 pub(crate) fn write_raw_field_blocking(path: &str, field_key: &str, value: &str) -> Result<(), String> {
-    let mut tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
+    edit_file(path, |work| write_raw_field_into(work, path, field_key, value))
+}
+
+fn write_raw_field_into(work: &mut WorkingCopy, path: &str, field_key: &str, value: &str) -> Result<(), String> {
+    let mut tagged = work.parse(path, ParseOptions::default())?;
     let tag_type = tagged.file_type().primary_tag_type();
     let value = value.trim();
     if tagged.tag(tag_type).is_none() {
@@ -1216,9 +1255,7 @@ pub(crate) fn write_raw_field_blocking(path: &str, field_key: &str, value: &str)
         // through insert_unchecked too.
         tag.insert_unchecked(TagItem::new(existing_key, ItemValue::Text(value.to_string())));
     }
-    tagged
-        .save_to_path(path, WriteOptions::default())
-        .map_err(|e| e.to_string())
+    save_tagged(&tagged, work)
 }
 
 /// The `ItemKey` whose `key_name` is `name` — the inverse of `key_name`, so a
@@ -1348,7 +1385,11 @@ pub async fn backup_file(path: String, backup_field: String) -> Result<(), Strin
 }
 
 fn backup_file_blocking(path: &str, backup_field: &str) -> Result<(), String> {
-    let mut tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
+    edit_file(path, |work| backup_file_into(work, path, backup_field))
+}
+
+fn backup_file_into(work: &mut WorkingCopy, path: &str, backup_field: &str) -> Result<(), String> {
+    let mut tagged = work.parse(path, ParseOptions::default())?;
     // Write into the format's canonical tag (e.g. ID3v2 for MP3), never a
     // limited secondary tag like ID3v1 that can't hold Composer.
     let tag_type = tagged
@@ -1396,9 +1437,7 @@ fn backup_file_blocking(path: &str, backup_field: &str) -> Result<(), String> {
             ItemValue::Text(json),
         ));
     }
-    tagged
-        .save_to_path(path, WriteOptions::default())
-        .map_err(|e| e.to_string())
+    save_tagged(&tagged, work)
 }
 
 /// Returns the first embedded picture as a `data:` URL, or None if the file
@@ -1607,37 +1646,42 @@ fn embed_picture_bytes(path: &str, mime: lofty::picture::MimeType, bytes: Vec<u8
         bytes,
     );
 
-    let mut tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
-    let tag_type = tagged
-        .primary_tag()
-        .map(|t| t.tag_type())
-        .unwrap_or_else(|| tagged.file_type().primary_tag_type());
-    if tagged.primary_tag().is_none() {
-        tagged.insert_tag(Tag::new(tag_type));
-    }
-    let tag = tagged.tag_mut(tag_type).ok_or("Could not access tag")?;
-    tag.set_picture(0, picture);
-    tagged
-        .save_to_path(path, WriteOptions::default())
-        .map_err(|e| e.to_string())
+    edit_file(path, |work| {
+        let mut tagged = work.parse(path, ParseOptions::default())?;
+        let tag_type = tagged
+            .primary_tag()
+            .map(|t| t.tag_type())
+            .unwrap_or_else(|| tagged.file_type().primary_tag_type());
+        if tagged.primary_tag().is_none() {
+            tagged.insert_tag(Tag::new(tag_type));
+        }
+        let tag = tagged.tag_mut(tag_type).ok_or("Could not access tag")?;
+        tag.set_picture(0, picture);
+        save_tagged(&tagged, work)
+    })
 }
 
 /// Removes all embedded pictures from the file.
 fn remove_all_pictures(path: &str) -> Result<(), String> {
-    let mut tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
-    let tag_type = tagged
-        .primary_tag()
-        .map(|t| t.tag_type())
-        .unwrap_or_else(|| tagged.file_type().primary_tag_type());
-    let Some(tag) = tagged.tag_mut(tag_type) else {
-        return Ok(());
-    };
-    while !tag.pictures().is_empty() {
-        tag.remove_picture(0);
-    }
-    tagged
-        .save_to_path(path, WriteOptions::default())
-        .map_err(|e| e.to_string())
+    edit_file(path, |work| {
+        let mut tagged = work.parse(path, ParseOptions::default())?;
+        let tag_type = tagged
+            .primary_tag()
+            .map(|t| t.tag_type())
+            .unwrap_or_else(|| tagged.file_type().primary_tag_type());
+        let Some(tag) = tagged.tag_mut(tag_type) else {
+            return Ok(());
+        };
+        // Nothing to remove: don't rewrite the file (and bump its modified
+        // time, which makes every DJ app and sync client think it changed).
+        if tag.pictures().is_empty() {
+            return Ok(());
+        }
+        while !tag.pictures().is_empty() {
+            tag.remove_picture(0);
+        }
+        save_tagged(&tagged, work)
+    })
 }
 
 /// Embeds `image_path` as the file's cover art, replacing any existing picture.
@@ -1951,7 +1995,11 @@ fn rename_file_blocking(path: &str, new_stem: &str) -> Result<String, String> {
 /// Returns whether the file actually needed rewriting, so the caller can report
 /// how much of the library was already standard.
 fn standardize_container_blocking(path: &str) -> Result<bool, String> {
-    let mut tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
+    edit_file(path, |work| standardize_container_into(work, path))
+}
+
+fn standardize_container_into(work: &mut WorkingCopy, path: &str) -> Result<bool, String> {
+    let mut tagged = work.parse(path, ParseOptions::default())?;
     let target = tagged.file_type().primary_tag_type();
     let present: Vec<TagType> = tagged.tags().iter().map(|t| t.tag_type()).collect();
 
@@ -1987,14 +2035,11 @@ fn standardize_container_blocking(path: &str) -> Result<bool, String> {
     let others: Vec<TagType> = present.into_iter().filter(|t| *t != target).collect();
     drop(tagged);
     for tt in others {
-        Tag::new(tt)
-            .remove_from_path(path)
-            .map_err(|e| e.to_string())?;
+        remove_container(tt, work)?;
     }
     repair_item_languages(&mut new_tag);
-    new_tag
-        .save_to_path(path, WriteOptions::default())
-        .map_err(|e| e.to_string())?;
+    work.rewind_to_start()?;
+    new_tag.save_to(work, WriteOptions::default()).map_err(|e| e.to_string())?;
     Ok(true)
 }
 
@@ -3239,6 +3284,125 @@ mod tests {
         }
         println!("{} write error(s)", write_errors.len());
         assert!(checked > 0, "no mp3s with ID3v2 found under {dir}");
+        std::fs::remove_dir_all(&scratch_dir).ok();
+    }
+
+    /// blake3 of the decoded audio of `path`'s default track, so a tag write
+    /// can be shown to leave the music itself bit-for-bit alone.
+    fn pcm_hash(path: &str) -> String {
+        use symphonia::core::codecs::audio::AudioDecoderOptions;
+        use symphonia::core::formats::probe::Hint;
+        use symphonia::core::formats::{FormatOptions, TrackType};
+        use symphonia::core::io::MediaSourceStream;
+        use symphonia::core::meta::MetadataOptions;
+
+        let file = std::fs::File::open(path).unwrap();
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+        let mut hint = Hint::new();
+        if let Some(ext) = Path::new(path).extension().and_then(|e| e.to_str()) {
+            hint.with_extension(ext);
+        }
+        let mut format = symphonia::default::get_probe()
+            .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
+            .unwrap();
+        let track = format.default_track(TrackType::Audio).unwrap();
+        let id = track.id;
+        let params = track.codec_params.as_ref().unwrap().audio().unwrap().clone();
+        let mut decoder = symphonia::default::get_codecs()
+            .make_audio_decoder(&params, &AudioDecoderOptions::default())
+            .unwrap();
+        let mut hasher = blake3::Hasher::new();
+        let mut pcm: Vec<i16> = Vec::new();
+        while let Ok(Some(packet)) = format.next_packet() {
+            if packet.track_id != id {
+                continue;
+            }
+            if let Ok(audio) = decoder.decode(&packet) {
+                pcm.resize(audio.samples_interleaved(), 0);
+                audio.copy_to_slice_interleaved(&mut pcm);
+                let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+                hasher.update(&bytes);
+            }
+        }
+        hasher.finalize().to_hex().to_string()
+    }
+
+    /// Opt-in end-to-end check of the crash-safe writer on real files of
+    /// every format under `MTC_TEST_DIR` (copies only — the originals are only
+    /// read): an edit with a JSON backup and a searchable backup lands, every
+    /// other field survives, the decoded audio is unchanged, and the backup
+    /// restores the original title. Files over 300 MB (the on-disk working-copy
+    /// path) skip the audio decode, which would take minutes.
+    ///   MTC_TEST_DIR="C:\path\to\tracks" cargo test real_files_of_every_format -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn real_files_of_every_format_survive_an_edit() {
+        let dir = std::env::var("MTC_TEST_DIR").expect("set MTC_TEST_DIR");
+        let scratch_dir = scratch("real-any");
+        let sources: Vec<std::path::PathBuf> = audio_files_under(Path::new(&dir), true).collect();
+        // Keys the edit itself is allowed to change.
+        const EDITED: &[&str] = &["TrackTitle", "Popularimeter", "Unknown(RATING)", "Composer"];
+        let mut checked = 0;
+        for (i, src) in sources.iter().enumerate() {
+            let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+            let copy = scratch_dir.join(format!("{i}.{ext}"));
+            std::fs::copy(src, &copy).unwrap();
+            let p = copy.to_str().unwrap().to_string();
+            let Ok(tags) = read_tags_impl(&p) else {
+                println!("skipped (unreadable): {}", src.display());
+                continue;
+            };
+            let big = std::fs::metadata(&p).unwrap().len() > 300 * 1024 * 1024;
+            let audio_before = (!big).then(|| pcm_hash(&p));
+            let started = std::time::Instant::now();
+
+            let mut edited = tags.clone();
+            // Trimmed like the writer trims: an untitled file becomes "(edited)".
+            let new_title = format!("{} (edited)", tags.title.clone().unwrap_or_default()).trim().to_string();
+            edited.title = Some(new_title.clone());
+            edited.rating = Some(3);
+            write_tags_blocking(&p, edited, true, ui_keep_extra(&tags), true, Some("Composer".into()))
+                .unwrap_or_else(|e| panic!("{}: {e}", src.display()));
+            let took = started.elapsed();
+
+            let back = read_tags_impl(&p).unwrap();
+            assert_eq!(back.title.as_deref(), Some(new_title.as_str()), "{}", src.display());
+            assert_eq!(back.rating, Some(3), "rating not written for {}", src.display());
+            assert_eq!(
+                (&back.artist, &back.album, &back.album_artist, &back.genre, &back.year, &back.comment),
+                (&tags.artist, &tags.album, &tags.album_artist, &tags.genre, &tags.year, &tags.comment),
+                "a curated field changed for {}",
+                src.display()
+            );
+            assert_eq!(
+                (&back.bpm, &back.key, &back.track_id, &back.original_artist, &back.track_number, &back.language),
+                (&tags.bpm, &tags.key, &tags.track_id, &tags.original_artist, &tags.track_number, &tags.language),
+                "a DJ field changed for {}",
+                src.display()
+            );
+            assert_eq!(back.has_cover_art, tags.has_cover_art, "cover art changed for {}", src.display());
+            for (k, v) in &tags.all_fields {
+                if !EDITED.contains(&k.as_str()) {
+                    assert_eq!(back.all_fields.get(k), Some(v), "{k} changed for {}", src.display());
+                }
+            }
+            if let Some(h) = audio_before {
+                assert_eq!(pcm_hash(&p), h, "decoded audio changed for {}", src.display());
+            }
+            let leftovers: Vec<_> = std::fs::read_dir(&scratch_dir)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+                .collect();
+            assert!(leftovers.is_empty(), "a working copy was left behind");
+
+            crate::commands::backup::restore_from_backup_blocking(&p).unwrap();
+            assert_eq!(read_tags_impl(&p).unwrap().title, tags.title, "restore failed for {}", src.display());
+            println!("ok  {:>5} ms  {}", took.as_millis(), src.display());
+            checked += 1;
+        }
+        println!("checked {checked} real files");
+        assert!(checked > 0, "no readable audio under {dir}");
         std::fs::remove_dir_all(&scratch_dir).ok();
     }
 }
