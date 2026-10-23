@@ -197,6 +197,24 @@ export class PluginManager {
     for (const i of this.instances.values()) i.pushSelection(paths);
   }
 
+  /**
+   * True when some enabled plugin, approved at its current content, declares
+   * `requires.engines` containing `engineId`. Gates the host actions that drive
+   * that engine (e.g. `presets.*` need the Preset Translator plugin).
+   */
+  hasEnabledEngine(engineId: string): boolean {
+    const records = this.d.getRecords();
+    return this.entries.some((e) => {
+      const rec = records[e.id];
+      return (
+        !!e.manifest &&
+        !!rec?.enabled &&
+        rec.approvedHash === e.hash &&
+        !!e.manifest.requires?.engines?.some((x) => x.id === engineId)
+      );
+    });
+  }
+
   // ---- the person's decisions ----------------------------------------------
 
   async enable(id: string): Promise<void> {
