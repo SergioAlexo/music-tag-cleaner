@@ -2593,7 +2593,28 @@ deletes the earlier good output. Files convert up to four at a time (every
 encoder used is single-threaded); two sources mapping to one output name in a
 batch are refused instead of racing.
 
+**Settings can't be lost to a cut-short save.** The store plugin writes
+`settings.json` in place and ignores a file it can't parse, so a save cut
+short reset every setting on the next launch — and the first save after
+that made it permanent. Every save now also goes to `settings.backup.json`
+(`settings_backup.rs`: temp file, flushed, renamed; stale out-of-order writes
+dropped by a sequence number), written on every launch too; an empty or
+unreadable store is restored from it and `settings.json` repaired. Checked in
+the app: an emptied `settings.json` came back byte-identical.
+
+**Failed writes no longer look done.** A cell edit, bulk edit, rating, "All
+Tags" edit or Unify Track IDs whose write failed (a file locked by a DJ app)
+used to update the table and enter undo history anyway (`writtenOnly`); a
+failed undo of a raw field moved the entry as if undone; Remove Duplicates
+dropped every chosen row and file from view, deleted or not (it now gets the
+paths that really went to the Recycle Bin; `duplicates.delete` reports
+`removed`).
+
 **Fixes.**
+- Generate IDs, Back Up, Restore Backup and Standardize Tag Format never
+  refreshed the Library index, so genres and search kept the old values until
+  a full re-index; renaming a genre/album everywhere released the busy lock
+  before its off-session retag had finished.
 - Lyrics output window: its commands created/moved a window from synchronous
   commands, which Tauri documents as a WebView2 deadlock on Windows — now
   async. It also closes with the main window (it kept the app running alone).
@@ -2629,7 +2650,7 @@ opener 2.7.2, updater 2.14.0 on both sides), React 19.3.1, Vite 8.3.5, Vitest
 0.4 and the RustCrypto 0.11/0.13 family (API migrations, no functional gain),
 lofty 0.25 (backlog).
 
-**Verification.** `cargo test` 250 (+14, plus 2 new opt-in), `npm test` 372 (+3), mcp 9. New
+**Verification.** `cargo test` 252 (+16, plus 2 new opt-in), `npm test` 375 (+6), mcp 9. New
 ignored test `real_files_of_every_format_survive_an_edit` run on copies of
 real tracks (9 FLAC/MP3 from the CDJ spike stick + a 576 MB MP3 for the
 on-disk working-copy path): every field kept, decoded audio bit-identical,
