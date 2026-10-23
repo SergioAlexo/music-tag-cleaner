@@ -18,7 +18,7 @@ function backupArg(s: Settings): string | null {
 }
 
 /** One file's worth of work for `write_tags_batch`. */
-interface WriteItem {
+export interface WriteItem {
   path: string;
   tags: TagData;
   keepExtra: string[];
@@ -112,6 +112,35 @@ function groupByPath(rows: PendingChange[]): Map<string, PendingChange[]> {
 /** keepExtra for a merge write: preserve every non-common field untouched. */
 function preserveExtras(tags: TagData): string[] {
   return Object.keys(tags.allFields).filter((k) => !KEPT_FIELD_KEYS.has(k));
+}
+
+/** One field edit of one file, as the bulk edit paths produce them. */
+export interface FieldEdit {
+  path: string;
+  current: TagData;
+  field: keyof TagData & string;
+  value: string | number;
+}
+
+/**
+ * One write per file for a list of field edits. Several edits of one file
+ * become a single item carrying all of them: sent as separate items, each
+ * would carry the others' fields at their *old* values, so whichever was
+ * written last undid the rest.
+ */
+export function foldEditsByPath(edits: FieldEdit[]): WriteItem[] {
+  const byPath = new Map<string, WriteItem>();
+  for (const { path, current, field, value } of edits) {
+    const item = byPath.get(path);
+    if (item) (item.tags as unknown as Record<string, string | number>)[field] = value;
+    else
+      byPath.set(path, {
+        path,
+        tags: { ...current, [field]: value } as TagData,
+        keepExtra: preserveExtras(current),
+      });
+  }
+  return [...byPath.values()];
 }
 
 export function useTags() {
@@ -283,25 +312,11 @@ export function useTags() {
   /**
    * The same edit applied to many files in one batch write — used by every
    * bulk path (multi-select cell edit, ratings, undo/redo replay), which
-   * would otherwise be one round trip per file.
+   * would otherwise be one round trip per file. Edits of one file are folded
+   * into one write (`foldEditsByPath`).
    */
-  const updateFieldMany = async (
-    edits: {
-      path: string;
-      current: TagData;
-      field: keyof TagData & string;
-      value: string | number;
-    }[],
-    settings: Settings,
-  ): Promise<ApplyResult> =>
-    writeBatch(
-      edits.map(({ path, current, field, value }) => ({
-        path,
-        tags: { ...current, [field]: value } as TagData,
-        keepExtra: preserveExtras(current),
-      })),
-      settings,
-    );
+  const updateFieldMany = async (edits: FieldEdit[], settings: Settings): Promise<ApplyResult> =>
+    writeBatch(foldEditsByPath(edits), settings);
 
   /**
    * Writes pre-built tag objects, one per file. Use this when several fields
@@ -341,7 +356,9 @@ export function useTags() {
     onProgress?: Progress,
   ): Promise<ApplyResult & { assigned: number; nextId: number }> => {
     let counter = settings.nextTrackId;
-    const edits = paths
+    // One id per file: a path listed twice would otherwise burn two ids and
+    // keep only the second.
+    const edits = [...new Set(paths)]
       .filter((path) => map[path])
       .map((path) => ({
         path,

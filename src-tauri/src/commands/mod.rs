@@ -24,6 +24,7 @@ pub mod plugin_store;
 pub mod plugins;
 pub mod rekordbox_db;
 pub mod rekordbox_import;
+pub(crate) mod safe_save;
 pub mod sqlcipher;
 pub mod usb;
 pub mod ytmusic;
