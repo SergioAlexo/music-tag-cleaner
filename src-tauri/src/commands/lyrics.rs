@@ -660,6 +660,16 @@ pub struct LyricsData {
 /// What we already have for a track, with no network: sidecar `.lrc`/`.txt`,
 /// then the embedded tag, then the LRCLIB cache.
 fn lyrics_local(app: Option<&AppHandle>, path: &str) -> Option<LyricsData> {
+    lyrics_local_with(app, path, None)
+}
+
+/// `lyrics_local` for a caller that has already parsed the file (`read_meta`),
+/// so a language scan over a whole library reads each file once, not twice.
+fn lyrics_local_with(
+    app: Option<&AppHandle>,
+    path: &str,
+    parsed: Option<&(Meta, crate::models::TagData)>,
+) -> Option<LyricsData> {
     let mk = |text: String, source: &str| {
         if looks_synced(&text) {
             LyricsData { synced: Some(text), plain: None, source: source.into(), instrumental: false }
@@ -674,7 +684,14 @@ fn lyrics_local(app: Option<&AppHandle>, path: &str) -> Option<LyricsData> {
             }
         }
     }
-    let (meta, tags) = read_meta(path).ok()?;
+    let read;
+    let (meta, tags) = match parsed {
+        Some((m, t)) => (m, t),
+        None => {
+            read = read_meta(path).ok()?;
+            (&read.0, &read.1)
+        }
+    };
     if let Some(t) = tags.all_fields.get("Lyrics").filter(|t| !t.trim().is_empty()) {
         return Some(mk(t.clone(), "embedded"));
     }
@@ -719,11 +736,12 @@ fn suggest_one(app: &AppHandle, path: &str) -> LangSuggestion {
         source: source.to_string(),
         error,
     };
-    let (meta, _tags) = match read_meta(path) {
+    let parsed = match read_meta(path) {
         Ok(m) => m,
         Err(e) => return none("title", Some(e)),
     };
-    if let Some(l) = lyrics_local(Some(app), path) {
+    let meta = &parsed.0;
+    if let Some(l) = lyrics_local_with(Some(app), path, Some(&parsed)) {
         if l.instrumental {
             return LangSuggestion {
                 code: Some("zxx".into()),

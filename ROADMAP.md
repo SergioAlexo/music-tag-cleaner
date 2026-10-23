@@ -2541,7 +2541,122 @@ parallel agents; details + click-throughs in `plans/v0.19/notes/F1.md`,
 
 Tests at release: 369 TS, 236 Rust, 9 mcp.
 
-### 66. Renamed to Vatra Wave (display name only) — unreleased
+### 66. Reliability pass: crash-safe tag writes, faster duplicate scans, fixes — v0.19.2
+
+**Released as v0.19.2.** A review of everything since v0.18's (most of it the
+v0.19 batch): data-safety fixes first, then speed, then smaller bugs and a
+dependency refresh.
+
+**Crash-safe writes (the important one).** lofty saves in place — it reads
+the rest of the file, truncates it to zero and writes it back — so closing the
+app during a batch write (exit doesn't wait for the worker threads, and a
+batch keeps several inside that window), a crash, a full disk or a dropped USB
+stick/network share left zero-length or truncated tracks. Every tag write now
+goes through `commands/safe_save.rs`: lofty parses and edits a working copy
+(in memory, or a temporary copy on disk above 256 MB), the result goes to a
+`.mtc-<pid>-<n>.tmp` file beside the track and replaces it in one rename —
+the file is always the old version or the new one. Also:
+- one parse per write instead of two (the edit reads its own working copy);
+- an edit that changes nothing leaves the file and its modified time alone
+  (e.g. Remove Cover Art on a file with none);
+- edits of one file serialize (per-path lock): two raw-field writes of the
+  same file in one batch used to race and lose one;
+- secondary-tag removal and the main save land in the same replace, so a
+  failed save no longer leaves ID3v1/APE already deleted;
+- creation date and permissions survive; read-only files are refused; a
+  symlinked track is edited at its target; the rename retries briefly over
+  a virus scanner's sharing violation; a folder that refuses the temporary
+  file (a NAS share vetoing dot-files, create-denied ACLs) falls back to the
+  old in-place write rather than failing — but a full disk never does.
+- No fsync before the rename, on purpose: measured on the owner's SSD it made
+  each save 5-15x slower (17-50 ms vs ~3 ms per 10 MB file) and the failure
+  modes above don't need it; power loss is no worse than lofty's own write.
+- Frontend: `updateFieldMany` folds several edits of one file into one write
+  (`foldEditsByPath`) — as separate items the later write undid the earlier.
+
+**Faster duplicate scans.** The all-pairs stage ran `match_fingerprints` —
+a fresh concatenate + sort of ~2,000 items — for every pair. `could_match`
+now answers a *necessary* condition first: the matcher's own offset histogram
+(one pass over a per-row hash bucket table, peak tracked while counting) gives
+the alignment it would choose, and if no run of bit differences at that
+alignment is long and close enough to pass the classification thresholds,
+the pair cannot match. Only the rest go to the real matcher, so results are
+unchanged (`prefilter_never_changes_a_result` checks alignments and outcomes
+over identical/noisy/shifted/truncated/unrelated fingerprints). Bench: 26.7 µs
+→ 4.1 µs per pair (6.4x) on fingerprint-sized inputs; a rescan with cached
+fingerprints is mostly this stage.
+
+**Convert.** FFmpeg writes to `<name>.mtc-part` (format passed with `-f`,
+`ipod` for m4a) that is renamed into place when done: a failure no longer
+leaves a truncated track under a real name, and a failed overwrite no longer
+deletes the earlier good output. Files convert up to four at a time (every
+encoder used is single-threaded); two sources mapping to one output name in a
+batch are refused instead of racing.
+
+**Settings can't be lost to a cut-short save.** The store plugin writes
+`settings.json` in place and ignores a file it can't parse, so a save cut
+short reset every setting on the next launch — and the first save after
+that made it permanent. Every save now also goes to `settings.backup.json`
+(`settings_backup.rs`: temp file, flushed, renamed; stale out-of-order writes
+dropped by a sequence number), written on every launch too; an empty or
+unreadable store is restored from it and `settings.json` repaired. Checked in
+the app: an emptied `settings.json` came back byte-identical.
+
+**Failed writes no longer look done.** A cell edit, bulk edit, rating, "All
+Tags" edit or Unify Track IDs whose write failed (a file locked by a DJ app)
+used to update the table and enter undo history anyway (`writtenOnly`); a
+failed undo of a raw field moved the entry as if undone; Remove Duplicates
+dropped every chosen row and file from view, deleted or not (it now gets the
+paths that really went to the Recycle Bin; `duplicates.delete` reports
+`removed`).
+
+**Fixes.**
+- Generate IDs, Back Up, Restore Backup and Standardize Tag Format never
+  refreshed the Library index, so genres and search kept the old values until
+  a full re-index; renaming a genre/album everywhere released the busy lock
+  before its off-session retag had finished.
+- Lyrics output window: its commands created/moved a window from synchronous
+  commands, which Tauri documents as a WebView2 deadlock on Windows — now
+  async. It also closes with the main window (it kept the app running alone).
+- Mixxx backups missed changes still in `mixxxdb.sqlite-wal` (the doc said it
+  copied the -wal; the code didn't) — now `VACUUM INTO`, file copy as fallback.
+- Artwork: full-size covers from Apply were cached in `artwork.sqlite`
+  forever (hundreds of KB per track — GBs after a library-wide auto-pick); now
+  fetched uncached, and expired cache rows are pruned once per session.
+- Library index: changing the root kept `C:\Music2` rows for a `C:\Music`
+  root; `reindex_paths` (retag, Move to collection) indexed paths outside
+  every root — rows no index run would ever refresh; root checks are
+  case-insensitive on Windows/macOS like the filesystem; retag progress ended
+  one step short.
+- Rekordbox BPM/key import: one transaction (was a cleared table + one commit
+  per row, non-atomic and slow); `Location`s on a network share (`//nas/...`)
+  keep their UNC prefix.
+- Move to collection across drives flushes the copy before deleting the
+  original.
+- YouTube import: " - Topic" stripping sliced names wrong (or could panic)
+  when lowercasing changed a character's length ("İ"); a playlist yt-dlp
+  partly failed on (exit ≠ 0 with `--ignore-errors`) is now shown instead of
+  discarded.
+- Plugin `fetch` and the plugin store read at most their size cap instead of
+  buffering a whole response first.
+- USB formatter: the label is reduced to FAT32's charset before it goes on
+  the elevated helper's command line (a trailing `\` broke the quoting); a
+  failed volume lock says to close Explorer/apps using the drive.
+- Language detection reads each file once instead of twice.
+
+**Dependencies.** Semver-compatible refresh: Tauri 2.12.5 (+ dialog 2.8.3,
+opener 2.7.2, updater 2.14.0 on both sides), React 19.3.1, Vite 8.3.5, Vitest
+5.0.5, lucide 1.61, tokio 1.54, rmcp 3.7 (mcp). Not taken: zip 9, getrandom
+0.4 and the RustCrypto 0.11/0.13 family (API migrations, no functional gain),
+lofty 0.25 (backlog).
+
+**Verification.** `cargo test` 252 (+16, plus 2 new opt-in), `npm test` 375 (+6), mcp 9. New
+ignored test `real_files_of_every_format_survive_an_edit` run on copies of
+real tracks (9 FLAC/MP3 from the CDJ spike stick + a 576 MB MP3 for the
+on-disk working-copy path): every field kept, decoded audio bit-identical,
+JSON backup restores. Real-FFmpeg conversion test over all nine presets.
+
+### 67. Renamed to Vatra Wave (display name only) — unreleased
 
 The app outgrew "tag cleaner" (library, DJ sync, stems, plugins, presets), so
 everything a user reads now says **Vatra Wave**: window and HTML title,

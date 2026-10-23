@@ -17,6 +17,22 @@ pub(crate) fn client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Reads at most `cap` bytes of a response body; the flag says whether there
+/// was more. A plain `bytes()` buffers whatever the server sends before any
+/// size check can run - a runaway or hostile response could fill the memory.
+pub(crate) async fn read_body_capped(mut resp: reqwest::Response, cap: usize) -> Result<(Vec<u8>, bool), String> {
+    let mut out: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("Download failed: {e}"))? {
+        let room = cap - out.len();
+        if chunk.len() > room {
+            out.extend_from_slice(&chunk[..room]);
+            return Ok((out, true));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok((out, false))
+}
+
 fn part_path(dest: &Path) -> PathBuf {
     let mut name = dest.file_name().unwrap_or_default().to_os_string();
     name.push(".part");

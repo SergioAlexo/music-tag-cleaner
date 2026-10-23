@@ -302,6 +302,11 @@ pub fn plan_moves(items: &[OrganizeItem], root: &str, pattern: &str) -> Vec<Plan
 /// then delete the source. Used when `fs::rename` can't cross volumes. The
 /// source is only removed after the copy is verified, so a failure at any
 /// point leaves the original intact.
+///
+/// The copy is flushed to the device before the original goes: on a drive
+/// with write caching (an external SSD, a stick set to "better performance")
+/// the bytes could otherwise still be in memory when the source is deleted,
+/// and unplugging it then would lose the track outright.
 pub fn copy_verify_delete(src: &Path, dst: &Path) -> Result<(), String> {
     let part = dst.with_file_name(format!(
         "{}.part",
@@ -311,6 +316,11 @@ pub fn copy_verify_delete(src: &Path, dst: &Path) -> Result<(), String> {
     let result = (|| -> Result<(), String> {
         let want = fs::metadata(src).map_err(|e| e.to_string())?.len();
         fs::copy(src, &part).map_err(|e| format!("Copy failed: {e}"))?;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&part)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| format!("Copy failed: {e}"))?;
         let got = fs::metadata(&part).map_err(|e| e.to_string())?.len();
         if got != want {
             return Err(format!("Copy verification failed ({got} of {want} bytes)"));

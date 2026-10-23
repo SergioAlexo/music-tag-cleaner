@@ -1,6 +1,6 @@
 [package]
 name = "mtc-mcp"
-version = "0.19.1"
+version = "0.19.2"
 description = "MCP server (stdio) that lets an AI assistant drive Vatra Wave through its local AI-control bridge"
 license = "GPL-3.0-or-later"
 edition = "2021"

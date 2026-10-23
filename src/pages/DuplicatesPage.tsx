@@ -94,7 +94,8 @@ export function DuplicatesPage({
   files: AudioFile[];
   tags: Record<string, TagData>;
   notify: Notify;
-  onDelete: (paths: string[]) => Promise<boolean>;
+  /** Resolves to the paths that were actually removed. */
+  onDelete: (paths: string[]) => Promise<string[]>;
   onInspect: (path: string) => void;
   onShowInLibrary: (path: string) => void;
 }) {
@@ -275,18 +276,20 @@ export function DuplicatesPage({
 
   const runDelete = async () => {
     if (playingPath && toRemove.includes(playingPath)) unloadAudio();
-    const ok = await onDelete(toRemove);
-    if (ok) {
+    // Only rows whose file really went to the Recycle Bin disappear; one that
+    // couldn't be deleted (locked, permissions) stays, still marked Remove.
+    const gone = new Set(await onDelete(toRemove));
+    if (gone.size) {
       const remaining =
         groups
-          ?.map((g) => ({ ...g, paths: g.paths.filter((p) => !toRemove.includes(p)) }))
+          ?.map((g) => ({ ...g, paths: g.paths.filter((p) => !gone.has(p)) }))
           .filter((g) => g.paths.length > 1) ?? null;
       setGroups(remaining);
       // The old keeper may be the file that just got deleted, so recompute the
       // suggestion for every duplicate group that shrank, not just drop paths.
       setSuggestions((prev) => {
         const next = { ...prev };
-        for (const p of toRemove) delete next[p];
+        for (const p of gone) delete next[p];
         for (const g of remaining ?? []) {
           const before = groups?.find((o) => o.id === g.id);
           if (g.kind === "duplicate" && before && before.paths.length !== g.paths.length) {
@@ -297,7 +300,7 @@ export function DuplicatesPage({
       });
       setRowStates((prev) => {
         const next = { ...prev };
-        for (const p of toRemove) delete next[p];
+        for (const p of gone) delete next[p];
         return next;
       });
     }

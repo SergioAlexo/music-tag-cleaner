@@ -144,6 +144,11 @@ fn main() {
                 if window.label() == "main" {
                     commands::organize::snapshot_on_exit(window.app_handle());
                     bridge::shutdown(window.app_handle());
+                    // Off the event-loop thread, like every other window call.
+                    let app = window.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = commands::lyrics_output::close(&app);
+                    });
                 }
             }
         })
@@ -159,6 +164,8 @@ fn main() {
         .manage(bridge::BridgeState::default())
         .invoke_handler(tauri::generate_handler![
             take_opened_files,
+            commands::settings_backup::settings_backup_write,
+            commands::settings_backup::settings_backup_read,
             bridge::bridge_set_enabled,
             bridge::bridge_status,
             bridge::bridge_respond,
