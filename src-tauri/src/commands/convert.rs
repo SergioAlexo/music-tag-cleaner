@@ -347,8 +347,20 @@ mod tests {
         std::fs::write(&src, wav).unwrap();
         let src = src.to_string_lossy().to_string();
 
-        // Every preset's explicit muxer must produce a file lofty can read.
+        // Every preset's explicit muxer must produce a file lofty can read -
+        // for each encoder this FFmpeg build actually has (minimal builds,
+        // a CI runner's for one, may lack libopus or libvorbis).
+        let encoders = Command::new(&ffmpeg)
+            .args(["-hide_banner", "-encoders"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
         for preset in ["mp3-320", "mp3-v0", "alac", "aac-256", "aiff", "ogg-q8", "opus-192", "wav"] {
+            let codec = super::preset(preset).unwrap().codec_args[1];
+            if !encoders.split_whitespace().any(|w| w == codec) {
+                eprintln!("{preset}: this FFmpeg has no {codec} encoder; skipping");
+                continue;
+            }
             let r = convert_one(&ffmpeg, preset, &src, true, true);
             assert!(r.ok, "{preset}: {:?}", r.error);
             let out = PathBuf::from(r.output.unwrap());
