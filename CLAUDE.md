@@ -30,7 +30,7 @@ requests mean this one.
 | Prelisten player (single global player via `takeOverPlayback`) | `src/components/AudioPreview.tsx` |
 | AI backends: Ollama / API / Claude CLI | `src-tauri/src/commands/ai.rs`, `claude_cli.rs`, `src/hooks/useAI.ts` |
 | Library index (own sqlite, incremental on mtime+size) | `src-tauri/src/commands/library_index.rs`, `src/hooks/useLibraryIndex.ts` |
-| Tag read/write, cover art, rename, open-with | `src-tauri/src/commands/files.rs` (writes via `safe_save.rs`) |
+| Tag read/write, cover art, rename, open-with | `src-tauri/src/commands/files.rs` (writes via `safe_save.rs`; Vorbis comments via `vorbis_save.rs`) |
 | Optional external tools (yt-dlp, FFmpeg, Demucs, Ollama, Claude CLI) | `src/pages/ComponentsPage.tsx` + matching `commands/*.rs` |
 | Duplicates, convert, stems, USB, Rekordbox cues, backup | `commands/duplicates.rs`, `convert.rs`, `demucs.rs`, `usb.rs`, `rekordbox_import.rs`, `backup*.rs` |
 | v1.0 accounts/payments (not built; waiting on owner's Phase 0) | `supabase/migrations/0001_init.sql`, ROADMAP "Roadmap — v1.0" |
@@ -71,6 +71,11 @@ verified) — that's the project's convention.
   `safe_save::edit_file(path, |work| { work.parse(path, ..)?; ...; save_to(work) })`:
   working copy, temp file, one rename; edits of one file serialize. Call
   `work.rewind_to_start()` before each lofty `save_to`/`remove_from`.
+- **Vorbis comments (FLAC/OGG/Opus) are saved by `vorbis_save.rs`, never by
+  lofty's generic `Tag::save_to`.** lofty writes each comment back under its
+  `ItemKey`'s first spelling (MIXARTIST → REMIXER, KEY → INITIALKEY,
+  ORGANIZATION → LABEL) and the vendor string as an ENCODER comment. Save any
+  generic tag through `files::save_generic_tag`.
 - lofty is pinned to 0.22: 0.24 removed `ItemKey::Unknown` (see ROADMAP backlog).
 - `files::par_map(items, f, on_panic)` isolates a panicking file to one
   result; batch commands must return exactly one result per input path.

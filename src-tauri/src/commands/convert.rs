@@ -18,7 +18,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::ffmpeg::{find_ffmpeg, hide_console};
-use crate::commands::files::{read_tags_impl, write_tags_blocking};
+use crate::commands::files::{read_tags_for_copy, read_tags_impl, write_tags_blocking};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -193,8 +193,10 @@ fn convert_one(
     //
     // FFmpeg's `-map_metadata 0` has already carried the source's fields
     // across, so they are all kept: an empty keep-list here stripped the BPM,
-    // key, label, ISRC and the rest from every converted file.
-    let tag_warning = match read_tags_impl(src_str) {
+    // key, label, ISRC and the rest from every converted file. A field the
+    // source holds several values of is copied as all of them (see
+    // `read_tags_for_copy`), not cut down to its first.
+    let tag_warning = match read_tags_for_copy(src_str) {
         Ok(tags) => {
             let keep = read_tags_impl(&dst_str)
                 .map(|t| crate::commands::files::extra_field_keys(&t))
@@ -435,6 +437,81 @@ mod tests {
         let carried = read_tags_impl(&mp3).unwrap();
         assert_eq!(carried.title.as_deref(), Some("Test Tone"));
         assert_eq!(carried.track_id.as_deref(), Some("000123"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// End-to-end, needs a real ffmpeg: a FLAC with several composers and
+    /// DJ-app comment names converts to MP3 with every composer, and its Opus
+    /// copy keeps its comment names through the copy and a later edit. Run with:
+    ///   cargo test -- --ignored convert_keeps --nocapture
+    #[test]
+    #[ignore]
+    fn convert_keeps_repeated_fields_and_comment_names() {
+        use lofty::tag::TagExt;
+        let ffmpeg = which_ffmpeg().expect("ffmpeg not on PATH — needed for this test");
+        let dir = std::env::temp_dir().join(format!(
+            "mtc-convert-lists-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("tone.wav");
+        write_sine_wav(&wav, 44_100, 2.0);
+        let flac = convert_one(&ffmpeg, "flac", wav.to_str().unwrap(), false, true);
+        assert!(flac.ok, "{:?}", flac.error);
+        let flac = flac.output.unwrap();
+        let mut c = lofty::ogg::VorbisComments::default();
+        c.set_vendor("reference libFLAC 1.4.3 20230623".into());
+        for (k, v) in [
+            ("TITLE", "Danza Kuduro"),
+            ("ARTIST", "Lucenzo"),
+            ("COMPOSER", "Faouze Barkati"),
+            ("COMPOSER", "William Omar Landron Rivera"),
+            ("COMPOSER", "Cyril Govic"),
+            ("MIXARTIST", "Tiësto"),
+            ("KEY", "Am"),
+        ] {
+            c.push(k.into(), v.into());
+        }
+        c.save_to_path(&flac, lofty::config::WriteOptions::default()).unwrap();
+
+        let mp3 = convert_one(&ffmpeg, "mp3-320", &flac, false, true);
+        assert!(mp3.ok, "{:?}", mp3.error);
+        let carried = read_tags_impl(mp3.output.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            carried.composer.as_deref(),
+            Some("Faouze Barkati;William Omar Landron Rivera;Cyril Govic"),
+            "composers were cut down"
+        );
+
+        let opus = convert_one(&ffmpeg, "opus-192", &flac, false, true);
+        assert!(opus.ok, "{:?}", opus.error);
+        let opus = opus.output.unwrap();
+        let stored = |p: &str| {
+            let mut f = std::fs::File::open(p).unwrap();
+            let (c, _) = crate::commands::vorbis_save::read_comments(&mut f).unwrap().unwrap();
+            let items: Vec<(String, String)> = c.items().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            (c.vendor().to_string(), items)
+        };
+        let (vendor, before) = stored(&opus);
+        println!("opus comments after convert: {before:?}");
+        for name in ["MIXARTIST", "KEY"] {
+            assert!(before.iter().any(|(k, _)| k.eq_ignore_ascii_case(name)), "{name} was renamed by the convert copy");
+        }
+        let tags = read_tags_impl(&opus).unwrap();
+        let mut edited = tags.clone();
+        edited.title = Some("Danza Kuduro (Edit)".into());
+        let keep = crate::commands::files::extra_field_keys(&tags);
+        write_tags_blocking(&opus, edited, false, keep, true, None).unwrap();
+        let (after_vendor, after) = stored(&opus);
+        assert_eq!(after_vendor, vendor);
+        let others = |c: &[(String, String)]| -> Vec<(String, String)> {
+            c.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("TITLE")).cloned().collect()
+        };
+        assert_eq!(others(&after), others(&before), "an Opus edit renamed or moved a comment");
 
         std::fs::remove_dir_all(&dir).ok();
     }

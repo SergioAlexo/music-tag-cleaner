@@ -335,6 +335,52 @@ pub fn read_tags_impl(path: &str) -> Result<TagData, String> {
     Ok(tag_data_from(tagged))
 }
 
+/// `read_tags_impl` for copying a file's tags onto another file (Convert).
+///
+/// A file can hold several values of a curated field — a FLAC's repeated
+/// ARTIST, GENRE or COMPOSER comments, ID3v2.4's null-separated lists — and
+/// `TagData` carries only the first, which is fine for showing and editing it.
+/// Copied onto a converted file, though, that first value replaced the full
+/// list FFmpeg had carried across: a track with five composers came out with
+/// one. Here such a field holds every distinct value joined with ";", the way
+/// FFmpeg carries every other repeated field.
+pub(crate) fn read_tags_for_copy(path: &str) -> Result<TagData, String> {
+    let tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
+    let lists: Vec<(ItemKey, String)> = tagged
+        .primary_tag()
+        .or_else(|| tagged.first_tag())
+        .map(|tag| {
+            [ItemKey::TrackArtist, ItemKey::AlbumArtist, ItemKey::Genre, ItemKey::Composer]
+                .into_iter()
+                .filter_map(|key| joined_values(tag, &key).map(|joined| (key, joined)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut data = tag_data_from(tagged);
+    for (key, joined) in lists {
+        let field = match key {
+            ItemKey::TrackArtist => &mut data.artist,
+            ItemKey::AlbumArtist => &mut data.album_artist,
+            ItemKey::Genre => &mut data.genre,
+            _ => &mut data.composer,
+        };
+        *field = Some(joined);
+    }
+    Ok(data)
+}
+
+/// Every distinct value of `key` joined with ";" — `None` unless there are
+/// several.
+fn joined_values(tag: &Tag, key: &ItemKey) -> Option<String> {
+    let mut values: Vec<&str> = Vec::new();
+    for value in tag.get_strings(key).map(str::trim).filter(|v| !v.is_empty()) {
+        if !values.contains(&value) {
+            values.push(value);
+        }
+    }
+    (values.len() > 1).then(|| values.join(";"))
+}
+
 /// The raw field names of `tags` outside the curated set — the `keep_extra`
 /// that preserves every other field through a `write_tags_blocking` call
 /// (the Rust twin of `preserveExtras` in `useTags.ts`).
@@ -908,14 +954,28 @@ fn save_tag(mut tag: Tag, rating: Option<u8>, work: &mut WorkingCopy) -> Result<
     if let Some(stars) = rating {
         set_text_rating(&mut tag, stars);
     }
+    save_generic_tag(&tag, work)
+}
+
+/// Saves one generic tag into the working copy. Every save of a generic tag
+/// goes through here: Vorbis comments (FLAC, OGG, Opus) are written by
+/// `vorbis_save`, as a patch of the comments the file holds, because lofty's
+/// own save renames them (MIXARTIST → REMIXER, KEY → INITIALKEY, ...).
+pub(crate) fn save_generic_tag(tag: &Tag, work: &mut WorkingCopy) -> Result<(), String> {
+    if tag.tag_type() == TagType::VorbisComments {
+        return crate::commands::vorbis_save::save(tag, work);
+    }
+    work.rewind_to_start()?;
     tag.save_to(work, WriteOptions::default()).map_err(|e| e.to_string())
 }
 
 /// Saves every tag of `tagged` back into the working copy (the `save_to_path`
-/// of a whole parsed file).
+/// of a whole parsed file — which is this loop over lofty's per-tag save).
 fn save_tagged(tagged: &lofty::file::TaggedFile, work: &mut WorkingCopy) -> Result<(), String> {
-    work.rewind_to_start()?;
-    tagged.save_to(work, WriteOptions::default()).map_err(|e| e.to_string())
+    for tag in tagged.tags() {
+        save_generic_tag(tag, work)?;
+    }
+    Ok(())
 }
 
 /// Strips one whole tag container (ID3v1, APE, ...) from the working copy.
@@ -2038,8 +2098,7 @@ fn standardize_container_into(work: &mut WorkingCopy, path: &str) -> Result<bool
         remove_container(tt, work)?;
     }
     repair_item_languages(&mut new_tag);
-    work.rewind_to_start()?;
-    new_tag.save_to(work, WriteOptions::default()).map_err(|e| e.to_string())?;
+    save_generic_tag(&new_tag, work)?;
     Ok(true)
 }
 
@@ -2771,6 +2830,100 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A file's Vorbis comments exactly as stored: the vendor string and the
+    /// (name, value) pairs in order.
+    fn stored_comments(path: &str) -> (String, Vec<(String, String)>) {
+        let mut file = std::fs::File::open(path).unwrap();
+        let (c, _) = crate::commands::vorbis_save::read_comments(&mut file).unwrap().unwrap();
+        (c.vendor().to_string(), c.items().map(|(k, v)| (k.to_string(), v.to_string())).collect())
+    }
+
+    fn without(comments: &[(String, String)], names: &[&str]) -> Vec<(String, String)> {
+        comments.iter().filter(|(k, _)| !names.iter().any(|n| k.eq_ignore_ascii_case(n))).cloned().collect()
+    }
+
+    // lofty's own save renamed Vorbis comments on every edit — MIXARTIST to
+    // REMIXER, KEY to INITIALKEY, ORGANIZATION into a second LABEL — and wrote
+    // the vendor string out as a new ENCODER comment. Every kind of save has to
+    // leave the comments it didn't change exactly as they were stored.
+    #[test]
+    fn flac_comment_names_survive_every_kind_of_save() {
+        let dir = scratch("flac-names");
+        let path = dir.join("track.flac");
+        std::fs::write(&path, minimal_flac_bytes()).unwrap();
+        let p = path.to_str().unwrap().to_string();
+        let vendor = "reference libFLAC 1.4.3 20230623";
+        let dj: Vec<(String, String)> = [
+            ("TITLE", "Kerala"),
+            ("MIXARTIST", "Bonobo"),
+            ("ORGANIZATION", "Ninja Tune"),
+            ("LABEL", "Ninja Tune"),
+            ("KEY", "8A"),
+            ("TOTALTRACKS", "12"),
+            ("TRAKTOR4", "AAAA"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        {
+            let mut c = lofty::ogg::VorbisComments::default();
+            c.set_vendor(vendor.into());
+            for (k, v) in &dj {
+                c.push(k.clone(), v.clone());
+            }
+            c.save_to_path(&p, WriteOptions::default()).unwrap();
+        }
+        let check = |what: &str, changed: &[&str]| {
+            let (stored_vendor, stored) = stored_comments(&p);
+            assert_eq!(stored_vendor, vendor, "{what}: the vendor string changed");
+            assert_eq!(without(&stored, changed), without(&dj, changed), "{what}: a comment was renamed, moved or dropped");
+            assert!(!stored.iter().any(|(k, _)| k == "ENCODER"), "{what}: the vendor was copied into ENCODER");
+        };
+
+        let tags = read_tags_impl(&p).unwrap();
+        let mut edited = tags.clone();
+        edited.title = Some("Kerala (Edit)".into());
+        edited.rating = Some(4);
+        write_tags_blocking(&p, edited, true, ui_keep_extra(&tags), true, None).unwrap();
+        check("tag edit", &["TITLE", "RATING", BACKUP_KEY]);
+        assert_eq!(stored_comments(&p).1[0], ("TITLE".into(), "Kerala (Edit)".into()), "the edited title moved");
+
+        write_raw_field_blocking(&p, "Unknown(TRAKTOR4)", "BBBB").unwrap();
+        check("raw field edit", &["TITLE", "RATING", BACKUP_KEY, "TRAKTOR4"]);
+
+        crate::commands::backup::restore_from_backup_blocking(&p).unwrap();
+        check("restore", &[BACKUP_KEY]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_copy_carries_every_value_of_a_repeated_field() {
+        let dir = scratch("copy-lists");
+        let path = dir.join("track.flac");
+        std::fs::write(&path, minimal_flac_bytes()).unwrap();
+        let p = path.to_str().unwrap().to_string();
+        let mut c = lofty::ogg::VorbisComments::default();
+        for (k, v) in [
+            ("ARTIST", "Lucenzo"),
+            ("COMPOSER", "Faouze Barkati"),
+            ("COMPOSER", "Cyril Govic"),
+            ("COMPOSER", "Faouze Barkati"),
+            ("GENRE", "House"),
+            ("GENRE", "Latin"),
+        ] {
+            c.push(k.into(), v.into());
+        }
+        c.save_to_path(&p, WriteOptions::default()).unwrap();
+
+        let copy = read_tags_for_copy(&p).unwrap();
+        assert_eq!(copy.composer.as_deref(), Some("Faouze Barkati;Cyril Govic"));
+        assert_eq!(copy.genre.as_deref(), Some("House;Latin"));
+        assert_eq!(copy.artist.as_deref(), Some("Lucenzo"));
+        // What the table shows and edits stays the first value.
+        assert_eq!(read_tags_impl(&p).unwrap().composer.as_deref(), Some("Faouze Barkati"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn searchable_backup_fills_an_empty_field_and_never_overrides_the_user() {
         let dir = scratch("backupfield");
@@ -3354,6 +3507,8 @@ mod tests {
             };
             let big = std::fs::metadata(&p).unwrap().len() > 300 * 1024 * 1024;
             let audio_before = (!big).then(|| pcm_hash(&p));
+            let vorbis = matches!(ext.as_str(), "flac" | "ogg" | "opus");
+            let comments_before = vorbis.then(|| stored_comments(&p));
             let started = std::time::Instant::now();
 
             let mut edited = tags.clone();
@@ -3395,9 +3550,19 @@ mod tests {
                 .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
                 .collect();
             assert!(leftovers.is_empty(), "a working copy was left behind");
+            if let Some((vendor, before)) = &comments_before {
+                let (after_vendor, after) = stored_comments(&p);
+                assert_eq!(&after_vendor, vendor, "vendor string changed for {}", src.display());
+                let changed = ["TITLE", "RATING", "COMPOSER", BACKUP_KEY];
+                assert_eq!(without(&after, &changed), without(before, &changed), "comments renamed/moved for {}", src.display());
+            }
 
             crate::commands::backup::restore_from_backup_blocking(&p).unwrap();
             assert_eq!(read_tags_impl(&p).unwrap().title, tags.title, "restore failed for {}", src.display());
+            if let Some((_, before)) = &comments_before {
+                let (_, restored) = stored_comments(&p);
+                assert_eq!(without(&restored, &[BACKUP_KEY]), without(before, &[BACKUP_KEY]), "restore did not bring back the stored comments for {}", src.display());
+            }
             println!("ok  {:>5} ms  {}", took.as_millis(), src.display());
             checked += 1;
         }
