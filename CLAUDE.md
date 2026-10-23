@@ -29,7 +29,7 @@ requests mean this one.
 | Prelisten player (single global player via `takeOverPlayback`) | `src/components/AudioPreview.tsx` |
 | AI backends: Ollama / API / Claude CLI | `src-tauri/src/commands/ai.rs`, `claude_cli.rs`, `src/hooks/useAI.ts` |
 | Library index (own sqlite, incremental on mtime+size) | `src-tauri/src/commands/library_index.rs`, `src/hooks/useLibraryIndex.ts` |
-| Tag read/write, cover art, rename, open-with | `src-tauri/src/commands/files.rs` |
+| Tag read/write, cover art, rename, open-with | `src-tauri/src/commands/files.rs` (writes via `safe_save.rs`) |
 | Optional external tools (yt-dlp, FFmpeg, Demucs, Ollama, Claude CLI) | `src/pages/ComponentsPage.tsx` + matching `commands/*.rs` |
 | Duplicates, convert, stems, USB, Rekordbox cues, backup | `commands/duplicates.rs`, `convert.rs`, `demucs.rs`, `usb.rs`, `rekordbox_import.rs`, `backup*.rs` |
 | v1.0 accounts/payments (not built; waiting on owner's Phase 0) | `supabase/migrations/0001_init.sql`, ROADMAP "Roadmap — v1.0" |
@@ -64,6 +64,12 @@ verified) — that's the project's convention.
   only changed curated fields are rewritten. Custom keys need
   `insert_unchecked`/`push_unchecked` — the checked variants drop
   `ItemKey::Unknown`. ID3v2 POPM is only reachable via `Id3v2Tag::from(tag)`.
+- **Never call lofty's `save_to_path` / `remove_from_path` on a user's file.**
+  They truncate the file and rewrite it in place, so a crash or closing the app
+  mid-batch left zero-length tracks. Every edit goes through
+  `safe_save::edit_file(path, |work| { work.parse(path, ..)?; ...; save_to(work) })`:
+  working copy, temp file, one rename; edits of one file serialize. Call
+  `work.rewind_to_start()` before each lofty `save_to`/`remove_from`.
 - lofty is pinned to 0.22: 0.24 removed `ItemKey::Unknown` (see ROADMAP backlog).
 - `files::par_map(items, f, on_panic)` isolates a panicking file to one
   result; batch commands must return exactly one result per input path.
