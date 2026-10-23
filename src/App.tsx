@@ -1305,6 +1305,7 @@ export default function App() {
 
     setBusy(true);
     setProgress({ done: 0, total: paths.length, label: "Converting…" });
+    // Several files convert at once, so each event reports one that finished.
     const unlisten = await listen<{ done: number; total: number; file: string | null }>(
       "convert-progress",
       (e) => {
@@ -1312,7 +1313,7 @@ export default function App() {
         setProgress({
           done,
           total,
-          label: file ? `Converting ${basename(file)} (${done + 1}/${total})` : "Finishing…",
+          label: file ? `Converted ${done} of ${total} — ${basename(file)}` : "Converting…",
         });
       },
     );
