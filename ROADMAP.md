@@ -2656,6 +2656,44 @@ real tracks (9 FLAC/MP3 from the CDJ spike stick + a 576 MB MP3 for the
 on-disk working-copy path): every field kept, decoded audio bit-identical,
 JSON backup restores. Real-FFmpeg conversion test over all nine presets.
 
+### 67. FLAC/OGG comment names kept on save; Convert keeps repeated fields — v0.19.3
+
+**Released as v0.19.3.** Two tag-data bugs found while click-testing v0.19.2,
+both older than it.
+
+**Vorbis comment names (FLAC, OGG, Opus).** Every save went through lofty's
+generic `Tag`, which reads each comment name into an `ItemKey` and writes it
+back under that key's first spelling. Any edit — a title, a rating, a backup —
+renamed MIXARTIST → REMIXER (Traktor reads MIXARTIST), KEY → INITIALKEY
+(VirtualDJ / Engine DJ read KEY), TOTALTRACKS → TRACKTOTAL, WRITER → AUTHOR
+and others, turned ORGANIZATION into a second LABEL ("X;X" in apps that join
+values), and wrote the vendor string (shown by lofty as `EncoderSoftware`) out
+as a new ENCODER comment. `commands/vorbis_save.rs` now saves a Vorbis tag as
+a patch of the comments the file holds: it re-reads them from the working
+copy, keeps every (name, value) the edit left alone exactly as stored and in
+place, puts a changed value in the place and under the name of the comment it
+replaces, and only a field the file never had gets lofty's name. The vendor
+stays the vendor; an untouched picture keeps its stored size/colour info. Every
+generic-tag save goes through `files::save_generic_tag` (tag edits, raw-field
+edits, backup, restore, cover art, Standardize Tag Format). Files edited by
+earlier versions keep the names they were given then.
+
+**Convert: repeated fields.** `TagData` holds a field's first value, and the
+tag copy after FFmpeg wrote it over the full list FFmpeg had carried as
+"A;B;C": a FLAC with five COMPOSER comments converted with one (the same for
+repeated ARTIST / ALBUMARTIST / GENRE). `files::read_tags_for_copy` gives such
+a field every distinct value joined with ";" — FFmpeg's form for every other
+field — so the copy matches what FFmpeg wrote and leaves it alone.
+
+**Verification.** `cargo test` 259 (+7): unit tests of the patch, a FLAC taken
+through edit → raw-field edit → restore with every name kept, the copy's join.
+`flac_comment_names_survive_every_kind_of_save` fails on the old save with
+exactly the damage seen on real files. Opt-in: real FFmpeg FLAC → MP3 keeps
+three composers and FLAC → Opus keeps MIXARTIST/KEY through the copy and a
+later edit; `real_files_of_every_format_survive_an_edit` now also compares the
+stored Vorbis comments (vendor, names, order) after an edit and after a
+restore — all 9 real FLAC/MP3 pass. `npm test` 375.
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —

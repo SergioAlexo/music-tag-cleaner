@@ -1,6 +1,6 @@
 [package]
 name = "music-tag-cleaner"
-version = "0.19.2"
+version = "0.19.3"
 description = "Clean up messy audio tags, with a local AI or by hand"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/sergioalexo/music-tag-cleaner"

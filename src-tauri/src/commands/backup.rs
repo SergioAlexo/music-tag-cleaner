@@ -1,4 +1,4 @@
-use lofty::config::{ParseOptions, WriteOptions};
+use lofty::config::ParseOptions;
 use lofty::file::TaggedFile;
 use lofty::prelude::*;
 use lofty::tag::{ItemKey, ItemValue, Tag, TagItem, TagType};
@@ -141,6 +141,5 @@ fn restore_into(work: &mut crate::commands::safe_save::WorkingCopy, path: &str) 
         ItemKey::Unknown(BACKUP_KEY.to_string()),
         ItemValue::Text(backup),
     ));
-    work.rewind_to_start()?;
-    restored.save_to(work, WriteOptions::default()).map_err(|e| e.to_string())
+    crate::commands::files::save_generic_tag(&restored, work)
 }
