@@ -269,6 +269,42 @@ export function migrate(s: Settings, savedVersion: number): Settings {
   return next;
 }
 
+/**
+ * The settings document of a `settings.backup.json` (see
+ * `commands/settings_backup.rs`), or null when there is none worth using.
+ */
+export function settingsFromBackup(text: string | null | undefined): Partial<Settings> | null {
+  if (!text) return null;
+  try {
+    const doc = JSON.parse(text) as { settings?: unknown };
+    const s = doc?.settings;
+    return s && typeof s === "object" && !Array.isArray(s) ? (s as Partial<Settings>) : null;
+  } catch {
+    return null;
+  }
+}
+
+let backupSeq = 0;
+
+/**
+ * Saves `next` to the store, then to the durable backup copy. The store
+ * writes settings.json in place and ignores a file it can't parse, so a save
+ * cut short used to cost every setting on the next launch; the backup is
+ * what that launch recovers from. The sequence number rides on the clock so
+ * it keeps rising across a page reload, which the backup's stale-write check
+ * relies on.
+ */
+async function persist(store: Store, next: Settings) {
+  await store.set("settings", next);
+  await store.save();
+  writeBackup(next);
+}
+
+function writeBackup(next: Settings) {
+  const seq = Date.now() * 1000 + (backupSeq++ % 1000);
+  void invoke("settings_backup_write", { seq, json: JSON.stringify({ settings: next }) }).catch(() => {});
+}
+
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [loaded, setLoaded] = useState(false);
@@ -283,13 +319,27 @@ export function useSettings() {
       try {
         const store = await load(STORE_FILE);
         storeRef.current = store;
-        const saved = await store.get<Partial<Settings>>("settings");
+        let saved = await store.get<Partial<Settings>>("settings");
+        // An empty store is a first launch - or a settings.json that a cut-short
+        // save left unreadable. The backup tells them apart, and in the second
+        // case puts the owner's settings back (and repairs settings.json below).
+        let restored = false;
+        if (!saved) {
+          const backup = settingsFromBackup(
+            await invoke<string | null>("settings_backup_read").catch(() => null),
+          );
+          if (backup) {
+            saved = backup;
+            restored = true;
+            console.warn("settings.json was empty or unreadable; restored from settings.backup.json");
+          }
+        }
         if (saved) {
           const merged = mergeWithDefaults(saved);
           const savedVersion = saved.settingsVersion ?? 1;
           let next =
             savedVersion < CURRENT_SETTINGS_VERSION ? migrate(merged, savedVersion) : merged;
-          let dirty = savedVersion < CURRENT_SETTINGS_VERSION;
+          let dirty = savedVersion < CURRENT_SETTINGS_VERSION || restored;
           if (!next.libraryFolder) {
             // Seed from the first root the old multi-root index already had,
             // so upgrading never shows an empty Library when one was already
@@ -306,10 +356,10 @@ export function useSettings() {
           }
           latestRef.current = next;
           setSettings(next);
-          if (dirty) {
-            await store.set("settings", next);
-            await store.save();
-          }
+          if (dirty) await persist(store, next);
+          // Also on a plain launch, so an install upgraded from before the
+          // backup existed has one without waiting for a settings change.
+          else writeBackup(next);
         }
       } catch (e) {
         console.error("Failed to load settings:", e);
@@ -324,8 +374,7 @@ export function useSettings() {
     setSettings(next);
     try {
       const store = storeRef.current ?? (storeRef.current = await load(STORE_FILE));
-      await store.set("settings", next);
-      await store.save();
+      await persist(store, next);
     } catch (e) {
       console.error("Failed to save settings:", e);
     }

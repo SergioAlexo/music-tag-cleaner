@@ -69,11 +69,11 @@ async fn download(url: &str, cap: usize) -> Result<Vec<u8>, String> {
     if !resp.status().is_success() {
         return Err(format!("The store returned HTTP {}", resp.status()));
     }
-    let bytes = resp.bytes().await.map_err(|e| format!("Download failed: {e}"))?;
-    if bytes.len() > cap {
+    let (bytes, more) = super::download::read_body_capped(resp, cap).await?;
+    if more {
         return Err(format!("The download is larger than {} KB", cap / 1024));
     }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 fn read_zip_text<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, name: &str) -> Result<Option<String>, String> {

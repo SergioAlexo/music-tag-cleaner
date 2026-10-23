@@ -227,10 +227,25 @@ fn is_track_file(e: &walkdir::DirEntry) -> bool {
         && !e.file_name().to_string_lossy().starts_with("._")
 }
 
-/// Whether `path` sits under `root`, compared by path component — a plain
-/// string prefix would put `C:\Music2\x.mp3` under the root `C:\Music`.
+/// Whether `path` sits under `root`, compared by whole path components — a
+/// plain string prefix would put `C:\Music2\x.mp3` under the root `C:\Music`.
+/// Case-insensitive (and either separator) on Windows and macOS, as their
+/// filesystems are, so a path spelled `c:\music\...` still counts.
 fn is_under(path: &str, root: &str) -> bool {
-    Path::new(path).starts_with(Path::new(root))
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        let norm = |s: &str| {
+            let s = s.to_lowercase();
+            if cfg!(windows) { s.replace('\\', "/") } else { s }
+        };
+        let (path, root) = (norm(path), norm(root));
+        let root = root.trim_end_matches('/');
+        path == root || path.strip_prefix(root).is_some_and(|rest| rest.starts_with('/'))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        Path::new(path).starts_with(Path::new(root))
+    }
 }
 
 /// Inserts or refreshes one track's row.
@@ -443,7 +458,9 @@ pub async fn set_library_roots(app: AppHandle, roots: Vec<String>) -> Result<(),
             }
             keep.push_str(&format!("path LIKE ?{} ESCAPE '\\'", i + 1));
         }
-        let patterns: Vec<String> = roots.iter().map(|r| format!("{}%", escape_like(r))).collect();
+        // The root plus a separator, so `C:\Music` keeps `C:\Music\x.mp3` but
+        // not `C:\Music2\x.mp3` - rows nothing would ever refresh or prune.
+        let patterns: Vec<String> = roots.iter().map(|r| format!("{}%", escape_like(&with_separator(r)))).collect();
         let sql = format!("DELETE FROM library_track WHERE NOT ({keep})");
         tx.execute(&sql, rusqlite::params_from_iter(patterns.iter()))
             .map_err(|e| e.to_string())?;
@@ -452,6 +469,13 @@ pub async fn set_library_roots(app: AppHandle, roots: Vec<String>) -> Result<(),
     })
     .await
     .map_err(|_| "Saving library roots failed unexpectedly".to_string())?
+}
+
+/// `root` ending in exactly one path separator (its own kind, so a Windows
+/// root keeps `\` and a macOS one `/`).
+fn with_separator(root: &str) -> String {
+    let sep = if root.contains('\\') { '\\' } else { '/' };
+    format!("{}{sep}", root.trim_end_matches(['\\', '/']))
 }
 
 /// `LIKE` treats `%` and `_` as wildcards, and Windows paths legitimately
@@ -966,8 +990,8 @@ pub async fn retag_field(
         par_map(
             &paths,
             |path| {
-                let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if n % 16 == 0 {
+                let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if n % 16 == 0 || n == total {
                     emit_progress(&app2, "retagging", n, total, path);
                 }
                 let mut tags = match read_tags_impl(path) {
@@ -1039,23 +1063,46 @@ pub async fn reindex_library_paths(app: AppHandle, paths: Vec<String>) -> Result
 /// write, so the index never lags the files it describes. A path whose file
 /// is gone (renamed, deleted) has its row dropped rather than left behind as
 /// a ghost track until the next full re-index.
+///
+/// Only paths under a library root get a row. The callers here (a retag, a
+/// "Move to collection" whose target folder may lie elsewhere) pass whatever
+/// they touched, and a row outside every root is one no index run would ever
+/// refresh or prune.
 pub(crate) fn reindex_paths(app: &AppHandle, paths: &[String]) -> Result<(), String> {
+    let mut conn = open_db(app)?;
+    let roots: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT path FROM library_root").map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        rows
+    };
     let parsed = par_map(
         paths,
         |path| {
-            let p = Path::new(path);
-            let (mtime, size) = file_stat(p).unwrap_or((0, 0));
-            (path.clone(), mtime, size, read_for_index(path))
+            if !roots.iter().any(|r| is_under(path, r)) {
+                return None;
+            }
+            let (mtime, size) = file_stat(Path::new(path)).unwrap_or((0, 0));
+            Some((mtime, size, read_for_index(path)))
         },
-        |path| (path.clone(), 0, 0, Err(CRASHED.to_string())),
+        |_| Some((0, 0, Err(CRASHED.to_string()))),
     );
-    let mut conn = open_db(app)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let now = now_secs();
-    for (path, mtime, size, row) in parsed {
+    for (path, parsed) in paths.iter().zip(parsed) {
+        let Some((mtime, size, row)) = parsed else {
+            // Outside every root: never indexed (and any row from before this
+            // rule existed goes).
+            tx.execute("DELETE FROM library_track WHERE path = ?1", params![path])
+                .map_err(|e| e.to_string())?;
+            continue;
+        };
         match row {
-            Ok(row) => upsert_track(&tx, &path, mtime, size, row, now)?,
-            Err(_) if !Path::new(&path).exists() => {
+            Ok(row) => upsert_track(&tx, path, mtime, size, row, now)?,
+            Err(_) if !Path::new(path).exists() => {
                 tx.execute("DELETE FROM library_track WHERE path = ?1", params![path])
                     .map_err(|e| e.to_string())?;
             }
@@ -1217,6 +1264,42 @@ mod tests {
     /// Workstream A3: an unplugged/offline root must not cause its tracks to
     /// be pruned as "deleted" — only a root that actually resolved to a
     /// directory this run may have stale rows removed under it.
+    #[test]
+    fn a_root_matches_whole_folders_only_and_ignores_case_where_the_os_does() {
+        assert!(is_under(r"C:\Music\a.mp3", r"C:\Music"));
+        assert!(is_under(r"C:\Music\sub\a.mp3", r"C:\Music\"));
+        assert!(!is_under(r"C:\Music2\a.mp3", r"C:\Music"));
+        #[cfg(windows)]
+        {
+            assert!(is_under(r"c:\music\A.mp3", r"C:\Music"));
+            assert!(is_under("C:/Music/a.mp3", r"C:\Music"));
+            assert!(is_under(r"D:\x.mp3", r"D:\"));
+        }
+        assert_eq!(with_separator(r"C:\Music"), r"C:\Music\");
+        assert_eq!(with_separator(r"C:\Music\"), r"C:\Music\");
+        assert_eq!(with_separator("/Users/x/Music/"), "/Users/x/Music/");
+    }
+
+    /// Changing the root keeps only rows under it - `C:\Music2` rows used to
+    /// survive a root of `C:\Music` (a bare string prefix) and never refresh.
+    #[test]
+    fn the_root_delete_pattern_stops_at_a_folder_boundary() {
+        let conn = mem_db();
+        for p in [r"C:\Music\a.mp3", r"C:\Music2\b.mp3", r"C:\Other\c.mp3"] {
+            insert(&conn, p, None, None);
+        }
+        let pattern = format!("{}%", escape_like(&with_separator(r"C:\Music")));
+        conn.execute("DELETE FROM library_track WHERE NOT (path LIKE ?1 ESCAPE '\\')", [pattern]).unwrap();
+        let left: Vec<String> = conn
+            .prepare("SELECT path FROM library_track")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(left, vec![r"C:\Music\a.mp3".to_string()]);
+    }
+
     #[test]
     fn stale_rows_under_an_offline_root_are_not_pruned() {
         // "Music2" is an unplugged root whose name merely *starts with* the

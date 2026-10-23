@@ -1,4 +1,4 @@
-use lofty::config::WriteOptions;
+use lofty::config::{ParseOptions, WriteOptions};
 use lofty::file::TaggedFile;
 use lofty::prelude::*;
 use lofty::tag::{ItemKey, ItemValue, Tag, TagItem, TagType};
@@ -102,7 +102,11 @@ pub async fn restore_from_backup_batch(paths: Vec<String>) -> Vec<crate::models:
 }
 
 pub(crate) fn restore_from_backup_blocking(path: &str) -> Result<(), String> {
-    let mut tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
+    crate::commands::safe_save::edit_file(path, |work| restore_into(work, path))
+}
+
+fn restore_into(work: &mut crate::commands::safe_save::WorkingCopy, path: &str) -> Result<(), String> {
+    let mut tagged = work.parse(path, ParseOptions::default())?;
     let backup =
         find_backup_in_file(&tagged).ok_or_else(|| "No backup found in this file".to_string())?;
     let json = &backup[BACKUP_PREFIX.len()..];
@@ -137,7 +141,6 @@ pub(crate) fn restore_from_backup_blocking(path: &str) -> Result<(), String> {
         ItemKey::Unknown(BACKUP_KEY.to_string()),
         ItemValue::Text(backup),
     ));
-    restored
-        .save_to_path(path, WriteOptions::default())
-        .map_err(|e| e.to_string())
+    work.rewind_to_start()?;
+    restored.save_to(work, WriteOptions::default()).map_err(|e| e.to_string())
 }

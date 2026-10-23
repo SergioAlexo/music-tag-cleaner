@@ -122,6 +122,11 @@ fn location_to_path(location: &str) -> String {
         .unwrap_or(location);
     let decoded = percent_decode(rest);
     if cfg!(windows) {
+        // `file://localhost//server/share/x.mp3`: a network share keeps its
+        // leading `\\` - trimming every slash turned it into a relative path.
+        if let Some(unc) = decoded.strip_prefix("//").filter(|s| !s.starts_with('/')) {
+            return format!(r"\\{}", unc.replace('/', "\\"));
+        }
         decoded.trim_start_matches('/').replace('/', "\\")
     } else {
         decoded
@@ -736,7 +741,7 @@ fn import_rekordbox_library_tags_blocking(
     let xml_entries = tracks.len();
 
     // `open_db` runs the shared schema, which already includes `rekordbox_track`.
-    let conn = super::library_index::open_db(app)?;
+    let mut conn = super::library_index::open_db(app)?;
     ensure_rating_column(&conn)?;
 
     let now = std::time::SystemTime::now()
@@ -744,27 +749,37 @@ fn import_rekordbox_library_tags_blocking(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    conn.execute("DELETE FROM rekordbox_track", [])
+    // One transaction: the replace is all-or-nothing (a failure half way left
+    // the table cleared and half refilled), and thousands of rows commit once
+    // instead of once each.
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM rekordbox_track", [])
         .map_err(|e| e.to_string())?;
-    for t in &tracks {
-        if t.location.is_empty()
-            || (t.average_bpm.is_none() && t.tonality.is_none() && t.rating.is_none())
-        {
-            continue;
+    {
+        let mut insert = tx
+            .prepare(
+                "INSERT OR REPLACE INTO rekordbox_track (path_lower, bpm, key, rating, imported_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .map_err(|e| e.to_string())?;
+        for t in &tracks {
+            if t.location.is_empty()
+                || (t.average_bpm.is_none() && t.tonality.is_none() && t.rating.is_none())
+            {
+                continue;
+            }
+            insert
+                .execute(params![
+                    normalize_path_for_join(&t.location),
+                    // Rekordbox writes AverageBpm="0.00" for unanalysed tracks.
+                    t.average_bpm.filter(|b| *b > 0.0),
+                    t.tonality,
+                    t.rating.map(|r| r as i64),
+                    now
+                ])
+                .map_err(|e| e.to_string())?;
         }
-        conn.execute(
-            "INSERT OR REPLACE INTO rekordbox_track (path_lower, bpm, key, rating, imported_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                normalize_path_for_join(&t.location),
-                // Rekordbox writes AverageBpm="0.00" for unanalysed tracks.
-                t.average_bpm.filter(|b| *b > 0.0),
-                t.tonality,
-                t.rating.map(|r| r as i64),
-                now
-            ],
-        )
-        .map_err(|e| e.to_string())?;
     }
+    tx.commit().map_err(|e| e.to_string())?;
 
     let library_track_count: usize = conn
         .query_row("SELECT COUNT(*) FROM library_track", [], |r| r.get::<_, i64>(0))
@@ -895,6 +910,11 @@ mod tests {
             r"C:\Users\x\Music\A-Trak, Ferreck Dawn.flac"
         );
         assert_eq!(location_to_path("file:///C:/Music/a.mp3"), r"C:\Music\a.mp3");
+        // A track on a network share keeps its UNC prefix.
+        assert_eq!(
+            location_to_path("file://localhost//nas/Music/DJ%20Set/a.mp3"),
+            r"\\nas\Music\DJ Set\a.mp3"
+        );
     }
 
     #[cfg(not(windows))]
