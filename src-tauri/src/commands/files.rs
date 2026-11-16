@@ -346,9 +346,7 @@ pub fn read_tags_impl(path: &str) -> Result<TagData, String> {
 /// FFmpeg carries every other repeated field.
 pub(crate) fn read_tags_for_copy(path: &str) -> Result<TagData, String> {
     let tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
-    let lists: Vec<(ItemKey, String)> = tagged
-        .primary_tag()
-        .or_else(|| tagged.first_tag())
+    let lists: Vec<(ItemKey, String)> = main_tag(&tagged)
         .map(|tag| {
             [ItemKey::TrackArtist, ItemKey::AlbumArtist, ItemKey::Genre, ItemKey::Composer]
                 .into_iter()
@@ -420,8 +418,7 @@ pub(crate) fn read_for_index(path: &str) -> Result<IndexRow, String> {
 pub(crate) fn tag_data_from(mut tagged: lofty::file::TaggedFile) -> TagData {
     let mut data = tag_data_of(&tagged);
     if data.rating.is_none()
-        && tagged
-            .primary_tag()
+        && main_tag(&tagged)
             .is_some_and(|t| t.tag_type() == TagType::Id3v2 && t.has_format_specific_items())
     {
         if let Some(tag) = tagged.remove(TagType::Id3v2) {
@@ -431,12 +428,32 @@ pub(crate) fn tag_data_from(mut tagged: lofty::file::TaggedFile) -> TagData {
     data
 }
 
+/// The tag a file's metadata should live in. lofty names RIFF INFO / AIFF
+/// text chunks the primary tag of WAV / AIFF, but Rekordbox (and Serato,
+/// Traktor, Mixxx) only read the ID3v2 chunk of those files — so tags written
+/// to RIFF INFO were invisible to them, and the old "drop every non-primary
+/// tag" step even deleted the ID3 chunk the DJ software was reading. WAV and
+/// AIFF therefore use ID3v2; every other format keeps lofty's primary type.
+pub(crate) fn canonical_tag_type(tagged: &lofty::file::TaggedFile) -> TagType {
+    match tagged.file_type() {
+        lofty::file::FileType::Wav | lofty::file::FileType::Aiff => TagType::Id3v2,
+        ft => ft.primary_tag_type(),
+    }
+}
+
+/// The tag to read from: the canonical one, else whatever the file carries
+/// (a WAV with only RIFF INFO still shows its title/artist).
+pub(crate) fn main_tag(tagged: &lofty::file::TaggedFile) -> Option<&Tag> {
+    tagged
+        .tag(canonical_tag_type(tagged))
+        .or_else(|| tagged.primary_tag())
+        .or_else(|| tagged.first_tag())
+}
+
 /// Pulls the curated fields out of an already-parsed file (without the ID3v2
 /// POPM rating — see `tag_data_from`).
 pub(crate) fn tag_data_of(tagged: &lofty::file::TaggedFile) -> TagData {
-    tagged
-        .primary_tag()
-        .or_else(|| tagged.first_tag())
+    main_tag(tagged)
         .map(tag_data_of_tag)
         .unwrap_or_default()
 }
@@ -1007,11 +1024,11 @@ fn write_tags_into(
     let mut tagged = work.parse(path, ParseOptions::default())?;
     // Always the format's canonical tag, so fields aren't lost to a limited
     // secondary tag (e.g. ID3v1) that happened to be present.
-    let tag_type = tagged.file_type().primary_tag_type();
+    let tag_type = canonical_tag_type(&tagged);
 
     // Everything needed from the pre-change state, taken before the tag is
     // reused as the base of the new one.
-    let source = tagged.primary_tag().or_else(|| tagged.first_tag());
+    let source = main_tag(&tagged);
     let backup_blob = find_backup_in_file(&tagged)
         .or_else(|| backup.then(|| make_backup_string(source, tag_type)));
     let backup_key = backup_field.as_deref().map(backup_item_key);
@@ -1027,7 +1044,7 @@ fn write_tags_into(
     });
     // A file carrying only a secondary tag (an mp3 with just ID3v1): that tag
     // is the source of the kept fields and art for the new primary one.
-    let secondary_only = if tagged.primary_tag().is_none() {
+    let secondary_only = if main_tag(&tagged).is_none() {
         tagged.first_tag().cloned()
     } else {
         None
@@ -1283,7 +1300,7 @@ pub(crate) fn write_raw_field_blocking(path: &str, field_key: &str, value: &str)
 
 fn write_raw_field_into(work: &mut WorkingCopy, path: &str, field_key: &str, value: &str) -> Result<(), String> {
     let mut tagged = work.parse(path, ParseOptions::default())?;
-    let tag_type = tagged.file_type().primary_tag_type();
+    let tag_type = canonical_tag_type(&tagged);
     let value = value.trim();
     if tagged.tag(tag_type).is_none() {
         if value.is_empty() {
@@ -1452,14 +1469,11 @@ fn backup_file_into(work: &mut WorkingCopy, path: &str, backup_field: &str) -> R
     let mut tagged = work.parse(path, ParseOptions::default())?;
     // Write into the format's canonical tag (e.g. ID3v2 for MP3), never a
     // limited secondary tag like ID3v1 that can't hold Composer.
-    let tag_type = tagged
-        .primary_tag()
-        .map(|t| t.tag_type())
-        .unwrap_or_else(|| tagged.file_type().primary_tag_type());
+    let tag_type = canonical_tag_type(&tagged);
 
     // Read current values and decide on the JSON snapshot (immutable borrow).
     let (artist, title, year, json_backup) = {
-        let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
+        let tag = main_tag(&tagged);
         let (a, t, y) = match tag {
             Some(t) => (
                 t.artist().map(|c| c.to_string()),
@@ -1510,7 +1524,7 @@ pub async fn read_cover_art(path: String) -> Result<Option<String>, String> {
 fn read_cover_art_blocking(path: &str) -> Result<Option<String>, String> {
     use base64::Engine;
     let tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
-    let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
+    let Some(tag) = main_tag(&tagged) else {
         return Ok(None);
     };
     let Some(pic) = tag.pictures().first() else {
@@ -1539,7 +1553,7 @@ fn read_cover_thumbnail_blocking(path: &str, size: u32) -> Result<Option<String>
 
     let size = size.clamp(16, 512);
     let tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
-    let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
+    let Some(tag) = main_tag(&tagged) else {
         return Ok(None);
     };
     let Some(pic) = tag.pictures().first() else {
@@ -1640,7 +1654,7 @@ pub async fn image_info_batch(paths: Vec<String>) -> Vec<ImageInfoResult> {
 
 fn image_info_blocking(path: &str) -> Result<Option<ImageInfo>, String> {
     let tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
-    let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
+    let Some(tag) = main_tag(&tagged) else {
         return Ok(None);
     };
     let Some(pic) = tag.pictures().first() else {
@@ -1708,11 +1722,8 @@ fn embed_picture_bytes(path: &str, mime: lofty::picture::MimeType, bytes: Vec<u8
 
     edit_file(path, |work| {
         let mut tagged = work.parse(path, ParseOptions::default())?;
-        let tag_type = tagged
-            .primary_tag()
-            .map(|t| t.tag_type())
-            .unwrap_or_else(|| tagged.file_type().primary_tag_type());
-        if tagged.primary_tag().is_none() {
+        let tag_type = canonical_tag_type(&tagged);
+        if tagged.tag(tag_type).is_none() {
             tagged.insert_tag(Tag::new(tag_type));
         }
         let tag = tagged.tag_mut(tag_type).ok_or("Could not access tag")?;
@@ -1725,10 +1736,7 @@ fn embed_picture_bytes(path: &str, mime: lofty::picture::MimeType, bytes: Vec<u8
 fn remove_all_pictures(path: &str) -> Result<(), String> {
     edit_file(path, |work| {
         let mut tagged = work.parse(path, ParseOptions::default())?;
-        let tag_type = tagged
-            .primary_tag()
-            .map(|t| t.tag_type())
-            .unwrap_or_else(|| tagged.file_type().primary_tag_type());
+        let tag_type = canonical_tag_type(&tagged);
         let Some(tag) = tagged.tag_mut(tag_type) else {
             return Ok(());
         };
@@ -1872,9 +1880,7 @@ pub(crate) fn apply_cover_bytes(
 
     let before = {
         let tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
-        tagged
-            .primary_tag()
-            .or_else(|| tagged.first_tag())
+        main_tag(&tagged)
             .and_then(|t| t.pictures().first())
             .map(|p| {
                 let mime = p.mime_type().map(|m| m.as_str().to_string()).unwrap_or_else(|| "image/jpeg".into());
@@ -1915,7 +1921,7 @@ fn standardize_artwork_blocking(
     use base64::Engine;
 
     let tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
-    let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else {
+    let Some(tag) = main_tag(&tagged) else {
         return Ok(None);
     };
     let Some(pic) = tag.pictures().first() else {
@@ -2060,7 +2066,7 @@ fn standardize_container_blocking(path: &str) -> Result<bool, String> {
 
 fn standardize_container_into(work: &mut WorkingCopy, path: &str) -> Result<bool, String> {
     let mut tagged = work.parse(path, ParseOptions::default())?;
-    let target = tagged.file_type().primary_tag_type();
+    let target = canonical_tag_type(&tagged);
     let present: Vec<TagType> = tagged.tags().iter().map(|t| t.tag_type()).collect();
 
     // Nothing to unify: no tags at all, or exactly the canonical one already.
@@ -3130,6 +3136,39 @@ mod tests {
         }
         std::fs::remove_dir_all(&dir).ok();
         assert!(failures.is_empty(), "audit failures:\n{}", failures.join("\n"));
+    }
+
+    /// Rekordbox / Serato / Traktor read only the ID3v2 chunk of a WAV or AIFF.
+    /// Tags that landed in RIFF INFO (lofty's "primary" tag for WAV) never
+    /// showed up there — and the write also deleted any ID3 chunk present.
+    #[test]
+    fn wav_and_aiff_tags_are_written_to_the_id3_chunk() {
+        let dir = scratch("wav-id3");
+        for (name, bytes) in [("a.wav", SAMPLE_WAV), ("a.aiff", SAMPLE_AIFF)] {
+            let p = dir.join(name);
+            std::fs::write(&p, bytes).unwrap();
+            let p = p.to_str().unwrap().to_string();
+            // Start from a RIFF INFO / AIFF text tag, like files tagged by other tools.
+            if name.ends_with("wav") {
+                let mut info = Tag::new(TagType::RiffInfo);
+                info.set_title("Old".into());
+                info.save_to_path(&p, WriteOptions::default()).unwrap();
+            }
+            write_tags_blocking(&p, full_tags(), false, vec![], true, None).unwrap();
+
+            let tagged = lofty::read_from_path(&p).unwrap();
+            let id3 = tagged
+                .tag(TagType::Id3v2)
+                .unwrap_or_else(|| panic!("{name}: no ID3v2 chunk written"));
+            assert_eq!(id3.title().as_deref(), full_tags().title.as_deref(), "{name} title");
+            assert_eq!(id3.artist().as_deref(), full_tags().artist.as_deref(), "{name} artist");
+            assert!(tagged.tag(TagType::RiffInfo).is_none(), "{name}: stale RIFF INFO left");
+            assert!(tagged.tag(TagType::AiffText).is_none(), "{name}: stale AIFF text left");
+            let back = read_tags_impl(&p).unwrap();
+            assert_eq!(back.original_artist, full_tags().original_artist, "{name} original artist");
+            assert_eq!(back.comment, full_tags().comment, "{name} comment");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

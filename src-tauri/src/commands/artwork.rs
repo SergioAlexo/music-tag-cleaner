@@ -703,7 +703,7 @@ fn file_stat(path: &str) -> Option<(i64, i64)> {
 fn hash_file(path: &str) -> Result<Option<HashRow>, String> {
     use lofty::prelude::*;
     let tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
-    let Some(tag) = tagged.primary_tag().or_else(|| tagged.first_tag()) else { return Ok(None) };
+    let Some(tag) = crate::commands::files::main_tag(&tagged) else { return Ok(None) };
     let Some(pic) = tag.pictures().first() else { return Ok(None) };
     let img = image::load_from_memory(pic.data()).map_err(|e| format!("Unreadable cover art: {e}"))?;
     use image::GenericImageView;
@@ -901,9 +901,8 @@ pub struct ClusterDto {
 }
 
 fn thumbnail_of(path: &str, size: u32) -> Option<String> {
-    use lofty::prelude::*;
     let tagged = lofty::read_from_path(path).ok()?;
-    let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
+    let tag = crate::commands::files::main_tag(&tagged)?;
     let img = image::load_from_memory(tag.pictures().first()?.data()).ok()?;
     let t = img.thumbnail(size, size).to_rgb8();
     let mut out = Vec::new();

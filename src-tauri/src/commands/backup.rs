@@ -116,7 +116,7 @@ fn restore_into(work: &mut crate::commands::safe_save::WorkingCopy, path: &str) 
     // The snapshot's keys are native names for the format's canonical tag
     // (`make_backup_string` is always called with it), so they must be read
     // back against that same type.
-    let tag_type = tagged.file_type().primary_tag_type();
+    let tag_type = crate::commands::files::canonical_tag_type(&tagged);
 
     // Rebuilt on the file's current tag rather than a blank one: that keeps
     // the cover art, any binary items, and the format-specific frames lofty

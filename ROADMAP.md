@@ -2694,6 +2694,24 @@ later edit; `real_files_of_every_format_survive_an_edit` now also compares the
 stored Vorbis comments (vendor, names, order) after an edit and after a
 restore — all 9 real FLAC/MP3 pass. `npm test` 375.
 
+### 68. WAV / AIFF tags now land where Rekordbox reads them — v0.19.4
+
+**Released as v0.19.4.** Tags written to a WAV never showed up in Rekordbox.
+lofty calls RIFF INFO the "primary" tag of WAV (AIFF text chunk for AIFF), and
+every write went there — but Rekordbox, Serato, Traktor and Mixxx only read the
+ID3v2 chunk of those files. Worse, the "drop every non-primary tag" step
+deleted the ID3 chunk when one existed.
+
+**Fix.** `files::canonical_tag_type` (ID3v2 for WAV/AIFF, lofty's primary type
+for everything else) and `files::main_tag` (canonical tag, else whatever the
+file carries, so a RIFF-INFO-only WAV still reads) replace every
+`primary_tag_type()` / `primary_tag()` use in `files.rs`, `backup.rs`,
+`artwork.rs` and `duplicates.rs`. A save now writes the ID3 chunk and strips
+the stale RIFF INFO / AIFF text. Existing files migrate on their next write.
+
+**Verified.** New test `wav_and_aiff_tags_are_written_to_the_id3_chunk`; 260
+Rust tests pass. Not yet re-checked inside Rekordbox itself.
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —
