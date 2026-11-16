@@ -2712,9 +2712,9 @@ the stale RIFF INFO / AIFF text. Existing files migrate on their next write.
 **Verified.** New test `wav_and_aiff_tags_are_written_to_the_id3_chunk`; 260
 Rust tests pass. Not yet re-checked inside Rekordbox itself.
 
-### 69. Square Art — center-crop embedded covers to a square (unreleased, after v0.19.4)
+### 69. Square Art — center-crop embedded covers to a square — v0.19.5
 
-New Library toolbar button **Square Art** (`square_artwork` in `files.rs`,
+**Released as v0.19.5.** New Library toolbar button **Square Art** (`square_artwork` in `files.rs`,
 action `artwork.square`). For each selected track whose cover is not square it
 trims the longer side equally from both ends — no scaling, no stretching —
 and re-embeds it as JPEG at the Settings quality. Already-square or art-less
