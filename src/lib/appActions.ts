@@ -75,6 +75,7 @@ export interface AppEnv {
     migrateTrackIds: () => Promise<unknown> | void;
     startUnify: () => Promise<unknown> | void;
     standardizeArtwork: () => Promise<unknown> | void;
+    squareArtwork: () => Promise<unknown> | void;
     removeArt: (paths: string[]) => Promise<unknown> | void;
     standardizeContainers: () => Promise<unknown> | void;
     renameToStandard: () => Promise<unknown> | void;
@@ -705,6 +706,14 @@ export function registerAppActions(reg: ActionRegistry, get: () => AppEnv): void
     description: "Re-encodes embedded covers to the size/quality in Settings. Undoable.",
     params: obj({ paths: paths() }, ["paths"]),
     run: (p: { paths: string[] }) => withSelection(p.paths, () => env().h.standardizeArtwork()).then(() => ({ done: true })),
+  });
+
+  reg.register({
+    id: "artwork.square",
+    title: "Square artwork",
+    description: "Center-crops embedded covers to a square (no scaling). Undoable.",
+    params: obj({ paths: paths() }, ["paths"]),
+    run: (p: { paths: string[] }) => withSelection(p.paths, () => env().h.squareArtwork()).then(() => ({ done: true })),
   });
 
   reg.register({

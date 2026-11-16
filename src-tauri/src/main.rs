@@ -205,6 +205,7 @@ fn main() {
             commands::files::remove_cover_art,
             commands::files::restore_cover_art,
             commands::files::standardize_artwork,
+            commands::files::square_artwork,
             commands::files::rename_file,
             commands::files::delete_file,
             commands::files::open_with,

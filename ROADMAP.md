@@ -2694,7 +2694,54 @@ later edit; `real_files_of_every_format_survive_an_edit` now also compares the
 stored Vorbis comments (vendor, names, order) after an edit and after a
 restore — all 9 real FLAC/MP3 pass. `npm test` 375.
 
-### 68. Preset Translator phase 1 (in progress)
+### 68. WAV / AIFF tags now land where Rekordbox reads them — v0.19.4
+
+**Released as v0.19.4 — WRONG FIX, corrected in item 70 (v0.19.6).** Tags written to a WAV never showed up in Rekordbox.
+lofty calls RIFF INFO the "primary" tag of WAV (AIFF text chunk for AIFF), and
+every write went there — but Rekordbox, Serato, Traktor and Mixxx only read the
+ID3v2 chunk of those files. Worse, the "drop every non-primary tag" step
+deleted the ID3 chunk when one existed.
+
+**Fix.** `files::canonical_tag_type` (ID3v2 for WAV/AIFF, lofty's primary type
+for everything else) and `files::main_tag` (canonical tag, else whatever the
+file carries, so a RIFF-INFO-only WAV still reads) replace every
+`primary_tag_type()` / `primary_tag()` use in `files.rs`, `backup.rs`,
+`artwork.rs` and `duplicates.rs`. A save now writes the ID3 chunk and strips
+the stale RIFF INFO / AIFF text. Existing files migrate on their next write.
+
+**Verified.** New test `wav_and_aiff_tags_are_written_to_the_id3_chunk`; 260
+Rust tests pass. Not yet re-checked inside Rekordbox itself.
+
+### 69. Square Art — center-crop embedded covers to a square — v0.19.5
+
+**Released as v0.19.5.** New Library toolbar button **Square Art** (`square_artwork` in `files.rs`,
+action `artwork.square`). For each selected track whose cover is not square it
+trims the longer side equally from both ends — no scaling, no stretching —
+and re-embeds it as JPEG at the Settings quality. Already-square or art-less
+files are skipped; the batch is one undo entry (`__coverArt` history).
+**Verified:** Rust test `square_crops_the_long_side_and_skips_square_art`
+(261 Rust / 375 TS pass, `npm run build` clean). Not click-tested in `tauri dev`.
+
+### 70. WAV tags: RIFF INFO *and* ID3 — v0.19.6
+
+**Released as v0.19.6.** Item 68 had the diagnosis backwards. Tested in
+Rekordbox with eight hand-built WAVs (ID3v2.3 / v2.4, `ID3 ` / `id3 ` chunk
+names, with and without RIFF INFO): **Rekordbox reads only the `LIST/INFO`
+block of a WAV and ignores the ID3 chunk entirely** (title shown = file name,
+artist empty). So v0.19.4/.5, which wrote ID3 only, made WAVs worse.
+
+**Now:** a WAV save writes the ID3v2 chunk (Serato / Traktor / Mixxx read it;
+holds every field) *and* a RIFF INFO block built from it (title, artist,
+album, genre, comment, year, track number, composer, language —
+`build_legacy_companion`). Fields INFO has no slot for (Original Artist, BPM,
+Track ID) live in ID3 only. **Standardize Tag Format** treats a WAV as
+complete only with both, so running it repairs files saved by v0.19.4/.5.
+AIFF stays ID3-only: lofty 0.22 panics writing AIFF text chunks into a file
+with none (little-endian COMM size read), and AIFF is untested in Rekordbox.
+Verified in Rekordbox: title/artist/year/genre read from INFO; album, comment,
+composer, track no. not yet checked. Test aid: ignored test `write_wav_sample`.
+
+### 71. Preset Translator phase 1 (in progress)
 
 Converts Serum / Serum 2 presets to Vital, built as an optional plugin plus a
 separate engine so the base app stays inert without them. Plan and frozen

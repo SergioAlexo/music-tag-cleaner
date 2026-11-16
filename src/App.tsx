@@ -1841,6 +1841,57 @@ export default function App() {
     }
   };
 
+  const squareArtwork = async () => {
+    const paths = filesApi.selectedPaths;
+    if (!paths.length) return notify("No files selected", "info");
+    const { artworkJpegQuality } = settingsRef.current;
+    setBusy(true);
+    setProgress({ done: 0, total: paths.length, label: `Squaring artwork 0 of ${paths.length}` });
+    const changes: HistoryChange[] = [];
+    try {
+      for (let i = 0; i < paths.length; i++) {
+        const path = paths[i];
+        try {
+          const res = await invoke<{
+            beforeDataUrl: string;
+            afterDataUrl: string;
+            beforeBytes: number;
+            afterBytes: number;
+          } | null>("square_artwork", {
+            path,
+            quality: artworkJpegQuality,
+          });
+          if (res) {
+            changes.push({ path, field: "__coverArt", before: res.beforeDataUrl, after: res.afterDataUrl });
+          }
+        } catch (e) {
+          notify(`${basename(path)}: ${e}`, "error");
+        }
+        setProgress({
+          done: i + 1,
+          total: paths.length,
+          label: `Squaring artwork ${Math.min(i + 1, paths.length)} of ${paths.length}`,
+        });
+      }
+      if (changes.length) {
+        invalidateCovers(changes.map((c) => c.path));
+        imageInfoApi.invalidate(changes.map((c) => c.path));
+        pushHistory({ label: `Square artwork (${changes.length})`, changes });
+      }
+      notify(
+        changes.length
+          ? `Cropped ${changes.length} cover${changes.length === 1 ? "" : "s"} to square`
+          : "Every selected cover is already square (or has no art)",
+        changes.length ? "success" : "info",
+      );
+    } catch (e) {
+      notify(String(e), "error");
+    } finally {
+      setProgress(null);
+      setBusy(false);
+    }
+  };
+
   /**
    * Moves every selected track's tags into the one container its format calls
    * canonical — ID3v2 for mp3/wav/aiff, Vorbis Comments for flac/ogg, MP4
@@ -2374,6 +2425,7 @@ This rewrites the ${meta.singular} tag on ${
         migrateTrackIds: runTrackIdMigration,
         startUnify,
         standardizeArtwork,
+        squareArtwork,
         removeArt: removeArtForPaths,
         standardizeContainers,
         renameToStandard,
@@ -2519,6 +2571,7 @@ This rewrites the ${meta.singular} tag on ${
               onFetchLyrics={withTrack1("fetchLyrics", runFetchLyrics)}
               onDetectLanguage={withTrack1("detectLanguage", runDetectLanguage)}
               onStandardizeArt={withTrack("standardizeArt", standardizeArtwork)}
+              onSquareArt={withTrack("squareArt", squareArtwork)}
               onFindArtwork={withTrack1("findArtwork", (paths: string[]) => setArtworkPaths(paths))}
               onJunkArt={withTrack("junkArt", () => setJunkArtOpen(true))}
               onStandardizeContainers={withTrack("standardizeContainers", standardizeContainers)}

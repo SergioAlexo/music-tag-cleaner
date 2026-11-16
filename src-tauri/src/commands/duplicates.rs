@@ -1362,7 +1362,7 @@ fn read_meta(path: &str) -> TrackMeta {
         .ok();
     let (artist, title, dur) = match &parsed {
         Some(tf) => {
-            let tag = tf.primary_tag().or_else(|| tf.first_tag());
+            let tag = crate::commands::files::main_tag(&tf);
             let d = tf.properties().duration().as_secs_f64();
             (
                 tag.and_then(|t| t.artist().map(|s| s.to_string())),
