@@ -1864,6 +1864,71 @@ fn recompress_cover(
     }))
 }
 
+/// Center-crops one file's cover art to a square (no scaling, nothing
+/// stretched: the longer side is trimmed equally from both ends). Returns
+/// `None` when the file has no art or the art is already square. Re-encodes as
+/// JPEG at `quality`, like `standardize_artwork`.
+#[tauri::command]
+pub async fn square_artwork(
+    path: String,
+    quality: u8,
+) -> Result<Option<crate::models::ArtworkChange>, String> {
+    run_blocking(move || square_artwork_blocking(&path, quality)).await
+}
+
+/// The pixel transform behind `square_artwork`; `None` when already square.
+fn square_cover(orig: &[u8], quality: u8) -> Result<Option<RecompressedCover>, String> {
+    use image::GenericImageView;
+
+    let img = image::load_from_memory(orig).map_err(|e| format!("Unreadable cover art: {e}"))?;
+    let (w, h) = img.dimensions();
+    if w == h {
+        return Ok(None);
+    }
+    let side = w.min(h);
+    let square = img.crop_imm((w - side) / 2, (h - side) / 2, side, side);
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(40, 100))
+        .encode_image(&square.to_rgb8())
+        .map_err(|e| format!("JPEG encode failed: {e}"))?;
+    Ok(Some(RecompressedCover { jpeg: out, from: (w, h), to: (side, side) }))
+}
+
+fn square_artwork_blocking(
+    path: &str,
+    quality: u8,
+) -> Result<Option<crate::models::ArtworkChange>, String> {
+    use base64::Engine;
+
+    let tagged = lofty::read_from_path(path).map_err(|e| e.to_string())?;
+    let Some(pic) = main_tag(&tagged).and_then(|t| t.pictures().first()) else {
+        return Ok(None);
+    };
+    let orig = pic.data().to_vec();
+    let before_mime = pic
+        .mime_type()
+        .map(|m| m.as_str().to_string())
+        .unwrap_or_else(|| "image/jpeg".to_string());
+    drop(tagged);
+
+    let Some(new) = square_cover(&orig, quality)? else {
+        return Ok(None);
+    };
+    embed_picture_bytes(path, lofty::picture::MimeType::Jpeg, new.jpeg.clone())?;
+
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(Some(crate::models::ArtworkChange {
+        before_data_url: format!("data:{before_mime};base64,{}", b64(&orig)),
+        after_data_url: format!("data:image/jpeg;base64,{}", b64(&new.jpeg)),
+        before_bytes: orig.len() as u64,
+        after_bytes: new.jpeg.len() as u64,
+        before_width: new.from.0,
+        before_height: new.from.1,
+        after_width: new.to.0,
+        after_height: new.to.1,
+    }))
+}
+
 /// Embeds downloaded artwork as the file's sole cover, scaled/re-encoded to the
 /// user's artwork target, and returns the before/after pair for undo history.
 /// Unlike `standardize_artwork` it always writes (the point is to replace the
@@ -2373,6 +2438,16 @@ mod tests {
             .write_to(&mut out, image::ImageFormat::Png)
             .unwrap();
         out.into_inner()
+    }
+
+    #[test]
+    fn square_crops_the_long_side_and_skips_square_art() {
+        let out = square_cover(&png_bytes(2000, 1500), 85).unwrap().unwrap();
+        assert_eq!(out.from, (2000, 1500));
+        assert_eq!(out.to, (1500, 1500)); // trimmed, not scaled
+        let tall = square_cover(&png_bytes(300, 500), 85).unwrap().unwrap();
+        assert_eq!(tall.to, (300, 300));
+        assert!(square_cover(&png_bytes(400, 400), 85).unwrap().is_none());
     }
 
     #[test]

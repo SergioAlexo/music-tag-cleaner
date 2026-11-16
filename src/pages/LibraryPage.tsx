@@ -11,6 +11,7 @@ import {
   History,
   Import,
   ImageDown,
+  Crop,
   Image as ImageIcon,
   ScanSearch,
   RotateCcw,
@@ -143,6 +144,7 @@ interface Props {
   onFetchLyrics?: (paths: string[]) => void;
   onDetectLanguage?: (paths: string[]) => void;
   onStandardizeArt: () => void;
+  onSquareArt: () => void;
   onFindArtwork: (paths: string[]) => void;
   onJunkArt: () => void;
   /** Moves every selected track's tags into its format's canonical container. */
@@ -234,6 +236,7 @@ export function LibraryPage({
   onFetchLyrics,
   onDetectLanguage,
   onStandardizeArt,
+  onSquareArt,
   onFindArtwork,
   onJunkArt,
   onStandardizeContainers,
@@ -700,6 +703,16 @@ export function LibraryPage({
           >
             <ImageDown />
             Standardize Art
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={onSquareArt}
+            disabled={noSel}
+            title="Center-crop embedded cover art to a square (no stretching, no scaling). Undoable."
+          >
+            <Crop />
+            Square Art
           </Button>
           <Button
             variant="secondary"
