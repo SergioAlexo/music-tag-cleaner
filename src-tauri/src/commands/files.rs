@@ -441,6 +441,47 @@ pub(crate) fn canonical_tag_type(tagged: &lofty::file::TaggedFile) -> TagType {
     }
 }
 
+/// The older text block a WAV keeps next to its ID3 chunk. Rekordbox
+/// reads *only* this one (RIFF INFO for WAV) — a WAV whose tags sit solely in
+/// an ID3 chunk shows its file name and an empty artist there — while
+/// Serato, Traktor and Mixxx read the ID3 chunk. So both are written.
+pub(crate) fn legacy_companion_type(ft: lofty::file::FileType) -> Option<TagType> {
+    match ft {
+        lofty::file::FileType::Wav => Some(TagType::RiffInfo),
+        // Not AIFF: lofty 0.22 panics writing AIFF text chunks into a file
+        // that has none (it reads the COMM size little-endian), and AIFF
+        // players read the ID3 chunk anyway.
+        _ => None,
+    }
+}
+
+/// The fields a RIFF INFO / AIFF text block can hold, copied from `tag`.
+/// What the block has no slot for (Original Artist, BPM, Track ID, ...) stays
+/// in the ID3 chunk only.
+fn build_legacy_companion(tag: &Tag, companion: TagType) -> Tag {
+    let mut out = Tag::new(companion);
+    for key in [
+        ItemKey::TrackTitle,
+        ItemKey::TrackArtist,
+        ItemKey::AlbumTitle,
+        ItemKey::Genre,
+        ItemKey::TrackNumber,
+        ItemKey::Composer,
+        ItemKey::Language,
+    ] {
+        if let Some(v) = get_text(tag, &key) {
+            out.insert_text(key, v);
+        }
+    }
+    if let Some(year) = year_of(tag) {
+        out.insert_text(ItemKey::RecordingDate, year);
+    }
+    if let Some(c) = displayed_comment(tag).and_then(|i| text_of(i.value())) {
+        out.insert_text(ItemKey::Comment, c);
+    }
+    out
+}
+
 /// The tag to read from: the canonical one, else whatever the file carries
 /// (a WAV with only RIFF INFO still shows its title/artist).
 pub(crate) fn main_tag(tagged: &lofty::file::TaggedFile) -> Option<&Tag> {
@@ -1025,6 +1066,7 @@ fn write_tags_into(
     // Always the format's canonical tag, so fields aren't lost to a limited
     // secondary tag (e.g. ID3v1) that happened to be present.
     let tag_type = canonical_tag_type(&tagged);
+    let legacy = legacy_companion_type(tagged.file_type());
 
     // Everything needed from the pre-change state, taken before the tag is
     // reused as the base of the new one.
@@ -1053,7 +1095,7 @@ fn write_tags_into(
         .tags()
         .iter()
         .map(|t| t.tag_type())
-        .filter(|t| *t != tag_type)
+        .filter(|t| *t != tag_type && Some(*t) != legacy)
         .collect();
 
     let (mut tag, old) = match tagged.remove(tag_type) {
@@ -1154,7 +1196,12 @@ fn write_tags_into(
     for tt in other_types {
         remove_container(tt, work)?;
     }
-    save_tag(tag, tags.rating, work)
+    let companion = legacy.map(|tt| build_legacy_companion(&tag, tt));
+    save_tag(tag, tags.rating, work)?;
+    if let Some(c) = companion {
+        save_generic_tag(&c, work)?;
+    }
+    Ok(())
 }
 
 /// Writes many files in one call, across `par_map`'s threads.
@@ -2132,10 +2179,15 @@ fn standardize_container_blocking(path: &str) -> Result<bool, String> {
 fn standardize_container_into(work: &mut WorkingCopy, path: &str) -> Result<bool, String> {
     let mut tagged = work.parse(path, ParseOptions::default())?;
     let target = canonical_tag_type(&tagged);
+    let legacy = legacy_companion_type(tagged.file_type());
     let present: Vec<TagType> = tagged.tags().iter().map(|t| t.tag_type()).collect();
 
-    // Nothing to unify: no tags at all, or exactly the canonical one already.
-    if present.is_empty() || (present.len() == 1 && present[0] == target) {
+    // Nothing to unify: no tags at all, or exactly the canonical one already
+    // (a WAV / AIFF wants its legacy block beside it too).
+    let complete = present.iter().all(|t| *t == target || Some(*t) == legacy)
+        && present.contains(&target)
+        && legacy.is_none_or(|l| present.contains(&l));
+    if present.is_empty() || complete {
         return Ok(false);
     }
 
@@ -2163,13 +2215,20 @@ fn standardize_container_into(work: &mut WorkingCopy, path: &str) -> Result<bool
         }
     }
 
-    let others: Vec<TagType> = present.into_iter().filter(|t| *t != target).collect();
+    let others: Vec<TagType> = present
+        .into_iter()
+        .filter(|t| *t != target && Some(*t) != legacy)
+        .collect();
     drop(tagged);
     for tt in others {
         remove_container(tt, work)?;
     }
     repair_item_languages(&mut new_tag);
+    let companion = legacy.map(|tt| build_legacy_companion(&new_tag, tt));
     save_generic_tag(&new_tag, work)?;
+    if let Some(c) = companion {
+        save_generic_tag(&c, work)?;
+    }
     Ok(true)
 }
 
@@ -3213,11 +3272,11 @@ mod tests {
         assert!(failures.is_empty(), "audit failures:\n{}", failures.join("\n"));
     }
 
-    /// Rekordbox / Serato / Traktor read only the ID3v2 chunk of a WAV or AIFF.
-    /// Tags that landed in RIFF INFO (lofty's "primary" tag for WAV) never
-    /// showed up there — and the write also deleted any ID3 chunk present.
+    /// Rekordbox reads only RIFF INFO of a WAV; Serato / Traktor / Mixxx read
+    /// the ID3 chunk. A save must leave both, and a second save must not lose
+    /// either (v0.19.4 wrote ID3 only — Rekordbox then showed no tags).
     #[test]
-    fn wav_and_aiff_tags_are_written_to_the_id3_chunk() {
+    fn wav_and_aiff_tags_go_to_both_the_id3_chunk_and_the_legacy_block() {
         let dir = scratch("wav-id3");
         for (name, bytes) in [("a.wav", SAMPLE_WAV), ("a.aiff", SAMPLE_AIFF)] {
             let p = dir.join(name);
@@ -3237,13 +3296,31 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name}: no ID3v2 chunk written"));
             assert_eq!(id3.title().as_deref(), full_tags().title.as_deref(), "{name} title");
             assert_eq!(id3.artist().as_deref(), full_tags().artist.as_deref(), "{name} artist");
-            assert!(tagged.tag(TagType::RiffInfo).is_none(), "{name}: stale RIFF INFO left");
-            assert!(tagged.tag(TagType::AiffText).is_none(), "{name}: stale AIFF text left");
+            if name.ends_with("wav") {
+                // Rekordbox reads only RIFF INFO, so it must be there too.
+                let block = tagged.tag(TagType::RiffInfo).expect("wav: no RIFF INFO written");
+                assert_eq!(block.title().as_deref(), full_tags().title.as_deref(), "wav info title");
+                assert_eq!(block.artist().as_deref(), full_tags().artist.as_deref(), "wav info artist");
+                assert_eq!(block.genre().as_deref(), full_tags().genre.as_deref(), "wav info genre");
+            } else {
+                assert!(tagged.tag(TagType::AiffText).is_none(), "aiff: stray text chunks");
+            }
             let back = read_tags_impl(&p).unwrap();
             assert_eq!(back.original_artist, full_tags().original_artist, "{name} original artist");
             assert_eq!(back.comment, full_tags().comment, "{name} comment");
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Manual aid: `MTC_WAV_SAMPLE=<src.wav> MTC_WAV_OUT=<dst.wav> cargo test
+    /// write_wav_sample -- --ignored` writes the full tag set into a copy of a
+    /// WAV, to open in Rekordbox.
+    #[test]
+    #[ignore]
+    fn write_wav_sample() {
+        let (Ok(src), Ok(dst)) = (std::env::var("MTC_WAV_SAMPLE"), std::env::var("MTC_WAV_OUT")) else { return };
+        std::fs::copy(&src, &dst).unwrap();
+        write_tags_blocking(&dst, full_tags(), false, vec![], true, None).unwrap();
     }
 
     #[test]

@@ -2696,7 +2696,7 @@ restore — all 9 real FLAC/MP3 pass. `npm test` 375.
 
 ### 68. WAV / AIFF tags now land where Rekordbox reads them — v0.19.4
 
-**Released as v0.19.4.** Tags written to a WAV never showed up in Rekordbox.
+**Released as v0.19.4 — WRONG FIX, corrected in item 70 (v0.19.6).** Tags written to a WAV never showed up in Rekordbox.
 lofty calls RIFF INFO the "primary" tag of WAV (AIFF text chunk for AIFF), and
 every write went there — but Rekordbox, Serato, Traktor and Mixxx only read the
 ID3v2 chunk of those files. Worse, the "drop every non-primary tag" step
@@ -2721,6 +2721,25 @@ and re-embeds it as JPEG at the Settings quality. Already-square or art-less
 files are skipped; the batch is one undo entry (`__coverArt` history).
 **Verified:** Rust test `square_crops_the_long_side_and_skips_square_art`
 (261 Rust / 375 TS pass, `npm run build` clean). Not click-tested in `tauri dev`.
+
+### 70. WAV tags: RIFF INFO *and* ID3 — v0.19.6
+
+**Released as v0.19.6.** Item 68 had the diagnosis backwards. Tested in
+Rekordbox with eight hand-built WAVs (ID3v2.3 / v2.4, `ID3 ` / `id3 ` chunk
+names, with and without RIFF INFO): **Rekordbox reads only the `LIST/INFO`
+block of a WAV and ignores the ID3 chunk entirely** (title shown = file name,
+artist empty). So v0.19.4/.5, which wrote ID3 only, made WAVs worse.
+
+**Now:** a WAV save writes the ID3v2 chunk (Serato / Traktor / Mixxx read it;
+holds every field) *and* a RIFF INFO block built from it (title, artist,
+album, genre, comment, year, track number, composer, language —
+`build_legacy_companion`). Fields INFO has no slot for (Original Artist, BPM,
+Track ID) live in ID3 only. **Standardize Tag Format** treats a WAV as
+complete only with both, so running it repairs files saved by v0.19.4/.5.
+AIFF stays ID3-only: lofty 0.22 panics writing AIFF text chunks into a file
+with none (little-endian COMM size read), and AIFF is untested in Rekordbox.
+Verified in Rekordbox: title/artist/year/genre read from INFO; album, comment,
+composer, track no. not yet checked. Test aid: ignored test `write_wav_sample`.
 
 ## Roadmap — v1.0
 
