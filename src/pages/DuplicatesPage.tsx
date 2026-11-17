@@ -1,14 +1,24 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { Notify } from "../hooks/useFiles";
 import { listen } from "@tauri-apps/api/event";
-import { AlertTriangle, Copy, FolderSearch, Loader2, Music, Play, Square, Trash2, Wand2 } from "lucide-react";
+import { AlertTriangle, Copy, EyeOff, FolderSearch, Loader2, Music, Play, RotateCcw, Square, Trash2, Wand2 } from "lucide-react";
 import { TrackContextMenu, trackMenuItems, useTrackContextMenu } from "../components/TrackContextMenu";
 import type { MenuEntry } from "../components/TrackContextMenu";
 import type { AudioFile, DuplicateGroup, TagData } from "../types";
 import { formatBytes } from "../types";
-import { Button, Card, cn } from "../components/ui";
-import { COMPLETENESS_FIELDS, suggestKeeper, suggestReason, tagCompleteness } from "../lib/duplicates";
+import { Button, Card, cn, selectClass } from "../components/ui";
+import {
+  COMPLETENESS_FIELDS,
+  addSkipped,
+  duplicateGroupKey,
+  fileVersion,
+  groupReasonLabel,
+  suggestAlternates,
+  suggestKeeper,
+  suggestReason,
+  tagCompleteness,
+} from "../lib/duplicates";
 import { Waveform } from "../components/Waveform";
 import { formatDuration, releasePlayback, takeOverPlayback } from "../components/AudioPreview";
 
@@ -75,7 +85,7 @@ function fileFacts(f: AudioFile | undefined, t: TagData | undefined): string {
     f.format.toUpperCase(),
     f.bitrateKbps ? `${f.bitrateKbps}kbps` : null,
     f.sampleRateHz ? `${(f.sampleRateHz / 1000).toFixed(1)}kHz` : null,
-    f.durationSecs ? `${Math.round(f.durationSecs)}s` : null,
+    f.durationSecs ? formatDuration(f.durationSecs) : null,
     formatBytes(f.size),
     t?.hasCoverArt ? "has artwork" : "no artwork",
     `${tagCompleteness(t)}/${COMPLETENESS_FIELDS.length + 1} tags filled`,
@@ -90,6 +100,10 @@ export function DuplicatesPage({
   onDelete,
   onInspect,
   onShowInLibrary,
+  skipped,
+  onSkippedChange,
+  alternatePolicy,
+  onAlternatePolicyChange,
 }: {
   files: AudioFile[];
   tags: Record<string, TagData>;
@@ -98,6 +112,12 @@ export function DuplicatesPage({
   onDelete: (paths: string[]) => Promise<string[]>;
   onInspect: (path: string) => void;
   onShowInLibrary: (path: string) => void;
+  /** Remembered skipped groups (`duplicateGroupKey` values), newest last. */
+  skipped: string[];
+  onSkippedChange: (next: (prev: string[]) => string[]) => void;
+  /** What to suggest for "alternate version" groups. */
+  alternatePolicy: "none" | "keepExtended";
+  onAlternatePolicyChange: (policy: "none" | "keepExtended") => void;
 }) {
   const { menu, openMenu, closeMenu } = useTrackContextMenu();
   const [menuPath, setMenuPath] = useState<string | null>(null);
@@ -105,11 +125,42 @@ export function DuplicatesPage({
   const [progress, setProgress] = useState<{ done: number; total: number; phase: string } | null>(null);
   const [groups, setGroups] = useState<DuplicateGroup[] | null>(null);
   const [rowStates, setRowStates] = useState<Record<string, RowState>>({});
-  // What the app would pick, shown as a ghost tint and never applied until the
-  // user clicks a button or "Apply suggestion". Duplicate groups only.
-  const [suggestions, setSuggestions] = useState<Record<string, "keep" | "remove">>({});
+  /** Skipped groups are hidden unless the owner asks to see them again. */
+  const [showSkipped, setShowSkipped] = useState(false);
 
-  const fileByPath = Object.fromEntries(files.map((f) => [f.path, f]));
+  const fileByPath = useMemo(() => Object.fromEntries(files.map((f) => [f.path, f])), [files]);
+
+  // What the app would pick, shown as a ghost tint and never applied until the
+  // user clicks a button or "Apply suggestion". Derived, so it follows a
+  // delete (the old keeper may be the file that just went) and the alternate-
+  // versions policy without any bookkeeping. Duplicate groups: best file kept.
+  // Alternate groups: nothing, unless the owner opted into "keep the extended
+  // version", and then only the clear radio-edit-of-the-same-mix cases.
+  const { suggestions, altReasons } = useMemo(() => {
+    const sugg: Record<string, "keep" | "remove"> = {};
+    const reasons: Record<string, string> = {};
+    for (const g of groups ?? []) {
+      if (g.kind === "alternate") {
+        if (alternatePolicy !== "keepExtended") continue;
+        const alt = suggestAlternates(g.paths, fileByPath, tags);
+        Object.assign(sugg, alt.states);
+        Object.assign(reasons, alt.reasons);
+      } else {
+        const keeper = suggestKeeper(g.paths, fileByPath, tags);
+        for (const p of g.paths) sugg[p] = p === keeper ? "keep" : "remove";
+      }
+    }
+    return { suggestions: sugg, altReasons: reasons };
+  }, [groups, alternatePolicy, fileByPath, tags]);
+
+  const skippedSet = useMemo(() => new Set(skipped), [skipped]);
+  const keyOf = useMemo(
+    () => Object.fromEntries((groups ?? []).map((g) => [g.id, duplicateGroupKey(g.paths)])),
+    [groups],
+  );
+  const isSkipped = (g: DuplicateGroup) => skippedSet.has(keyOf[g.id]);
+  const hiddenCount = (groups ?? []).filter(isSkipped).length;
+  const visibleGroups = (groups ?? []).filter((g) => showSkipped || !isSkipped(g));
 
   // One shared <audio> for the whole page: groups can hold hundreds of rows, so
   // an element per row (what <AudioPreview> does) is off the table.
@@ -189,13 +240,9 @@ export function DuplicatesPage({
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  const suggestGroup = (paths: string[]): Record<string, "keep" | "remove"> => {
-    const keeper = suggestKeeper(paths, fileByPath, tags);
-    return Object.fromEntries(paths.map((p) => [p, p === keeper ? "keep" : "remove"] as const));
-  };
-
   /** Tooltip for a ghost-tinted button: why the app picked this. */
   const suggestionTitle = (g: DuplicateGroup, p: string): string | undefined => {
+    if (g.kind === "alternate") return altReasons[p] ? `Suggested: ${altReasons[p]}` : undefined;
     const keeper = g.paths.find((q) => suggestions[q] === "keep");
     if (!keeper) return undefined;
     if (p === keeper) {
@@ -227,17 +274,17 @@ export function DuplicatesPage({
       unloadAudio();
       setGroups(result);
       // Every row starts undecided (no entry) so nothing is marked for removal
-      // until the user clicks. The ranking still runs: for "duplicate" groups the
-      // suggested keeper is Keep and the rest Remove, shown as a faint hint.
-      // "alternate" groups (different edits, not duplicates) get no suggestion.
-      const sugg: Record<string, "keep" | "remove"> = {};
-      for (const g of result) {
-        if (g.kind === "alternate") continue;
-        Object.assign(sugg, suggestGroup(g.paths));
-      }
+      // until the user clicks; the suggestions (see the memo above) are only a
+      // faint hint.
       setRowStates({});
-      setSuggestions(sugg);
+      setShowSkipped(false);
       if (!result.length) notify("No duplicates found", "success");
+      else {
+        const known = new Set(skipped);
+        const hidden = result.filter((g) => known.has(duplicateGroupKey(g.paths))).length;
+        if (hidden === result.length)
+          notify(`Nothing new: all ${hidden} group${hidden === 1 ? "" : "s"} found were skipped before`, "success");
+      }
     } catch (e) {
       notify(String(e), "error");
     } finally {
@@ -269,9 +316,28 @@ export function DuplicatesPage({
 
   const playDur = dur || (playingPath ? fileByPath[playingPath]?.durationSecs ?? 0 : 0);
 
+  // A Remove left on a group that was then skipped (and is hidden) must not
+  // be carried out out of sight: only groups on screen count.
+  const onScreen = new Set(visibleGroups.flatMap((g) => g.paths));
   const toRemove = Object.entries(rowStates)
-    .filter(([, s]) => s === "remove")
+    .filter(([p, s]) => s === "remove" && onScreen.has(p))
     .map(([p]) => p);
+
+  const skipGroups = (toSkip: DuplicateGroup[]) => {
+    if (!toSkip.length) return;
+    // A skipped group's file must not keep playing from a card that is gone.
+    if (playingPath && toSkip.some((g) => g.paths.includes(playingPath))) stopPlayback();
+    const keys = toSkip.map((g) => keyOf[g.id]);
+    onSkippedChange((prev) => addSkipped(prev, keys));
+    setRowStates((prev) => {
+      const next = { ...prev };
+      for (const g of toSkip) for (const p of g.paths) delete next[p];
+      return next;
+    });
+  };
+  const unskipGroup = (g: DuplicateGroup) => onSkippedChange((prev) => prev.filter((k) => k !== keyOf[g.id]));
+  /** Groups on screen with no Keep/Remove decision at all. */
+  const undecided = visibleGroups.filter((g) => !isSkipped(g) && !g.paths.some((p) => rowStates[p]));
   const removeBytes = toRemove.reduce((sum, p) => sum + (fileByPath[p]?.size ?? 0), 0);
 
   const runDelete = async () => {
@@ -285,19 +351,6 @@ export function DuplicatesPage({
           ?.map((g) => ({ ...g, paths: g.paths.filter((p) => !gone.has(p)) }))
           .filter((g) => g.paths.length > 1) ?? null;
       setGroups(remaining);
-      // The old keeper may be the file that just got deleted, so recompute the
-      // suggestion for every duplicate group that shrank, not just drop paths.
-      setSuggestions((prev) => {
-        const next = { ...prev };
-        for (const p of gone) delete next[p];
-        for (const g of remaining ?? []) {
-          const before = groups?.find((o) => o.id === g.id);
-          if (g.kind === "duplicate" && before && before.paths.length !== g.paths.length) {
-            Object.assign(next, suggestGroup(g.paths));
-          }
-        }
-        return next;
-      });
       setRowStates((prev) => {
         const next = { ...prev };
         for (const p of gone) delete next[p];
@@ -329,14 +382,29 @@ export function DuplicatesPage({
         <div className="min-w-0">
           <h1 className="text-xl font-bold">Duplicates</h1>
           <p className="text-sm text-muted-foreground">
-            Find duplicate tracks by audio content, not just file name — {files.length} loaded track
+            Compares the audio itself (acoustic fingerprint), then artist and title for different edits of one
+            song — {files.length} loaded track
             {files.length === 1 ? "" : "s"}
           </p>
         </div>
-        <Button variant="secondary" onClick={scan} disabled={scanning || !files.length}>
-          {scanning ? <Loader2 className="animate-spin" /> : <Copy />}
-          {scanning ? "Scanning…" : "Scan for Duplicates"}
-        </Button>
+        <div className="flex shrink-0 items-end gap-3">
+          <label className="text-xs text-muted-foreground">
+            <span className="mb-1 block">For alternate versions (radio vs extended)</span>
+            <select
+              className={cn(selectClass, "w-64")}
+              value={alternatePolicy}
+              onChange={(e) => onAlternatePolicyChange(e.target.value as "none" | "keepExtended")}
+              title="Only ever a suggestion: nothing is removed until you click Remove. Instrumentals, acapellas, intro edits and other remixes are never suggested."
+            >
+              <option value="none">Suggest nothing</option>
+              <option value="keepExtended">Suggest keeping the extended, removing radio edits</option>
+            </select>
+          </label>
+          <Button variant="secondary" onClick={scan} disabled={scanning || !files.length}>
+            {scanning ? <Loader2 className="animate-spin" /> : <Copy />}
+            {scanning ? "Scanning…" : "Scan for Duplicates"}
+          </Button>
+        </div>
       </div>
 
       {scanning && progress && (
@@ -365,9 +433,27 @@ export function DuplicatesPage({
         </div>
       ) : (
         <>
-          <div className="flex-1 space-y-4 overflow-y-auto pr-1">
-            {groups.map((g) => (
-              <Card key={g.id} className="p-4">
+          {hiddenCount > 0 && (
+            <div className="flex items-center gap-3 rounded-lg border bg-card px-4 py-2 text-sm">
+              <EyeOff className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="flex-1 text-muted-foreground">
+                {showSkipped
+                  ? `Showing ${hiddenCount} group${hiddenCount === 1 ? "" : "s"} you skipped before`
+                  : `${hiddenCount} group${hiddenCount === 1 ? "" : "s"} you skipped before ${hiddenCount === 1 ? "is" : "are"} hidden`}
+              </span>
+              <Button variant="ghost" size="sm" onClick={() => setShowSkipped((v) => !v)}>
+                {showSkipped ? "Hide skipped" : "Show skipped"}
+              </Button>
+            </div>
+          )}
+          {visibleGroups.length === 0 && (
+            <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+              Nothing left to review — every group found was skipped before.
+            </div>
+          )}
+          <div className={cn("flex-1 space-y-4 overflow-y-auto pr-1", visibleGroups.length === 0 && "hidden")}>
+            {visibleGroups.map((g) => (
+              <Card key={g.id} className={cn("p-4", isSkipped(g) && "opacity-70")}>
                 <div className="mb-2 flex items-center gap-2">
                   {g.kind === "alternate" ? (
                     <AlertTriangle className="h-4 w-4 shrink-0 text-amber-500" />
@@ -377,21 +463,50 @@ export function DuplicatesPage({
                   <span className="text-sm font-semibold">
                     {g.kind === "alternate" ? "Alternate versions" : "Duplicate"} — {g.paths.length} files
                   </span>
-                  <span className="text-xs text-muted-foreground">
-                    {g.kind === "alternate" ? "different edit — never auto-suggested for removal" : `match score ${g.score.toFixed(1)}`}
+                  <span className="min-w-0 truncate text-xs text-muted-foreground">
+                    {groupReasonLabel(g.reason)}
+                    {g.kind === "alternate"
+                      ? g.paths.some((p) => suggestions[p])
+                        ? " · different edits — shorter radio edit suggested for removal"
+                        : " · different edits — nothing suggested"
+                      : ` · match score ${g.score.toFixed(1)}`}
                   </span>
-                  {g.kind !== "alternate" && (
-                    <Button variant="ghost" size="sm" className="ml-auto" onClick={() => applySuggestions([g])}>
-                      <Wand2 />
-                      Apply suggestion
-                    </Button>
+                  {isSkipped(g) && (
+                    <span className="shrink-0 rounded border border-input px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+                      skipped
+                    </span>
                   )}
+                  <div className="ml-auto flex shrink-0 gap-1">
+                    {g.paths.some((p) => suggestions[p]) && (
+                      <Button variant="ghost" size="sm" onClick={() => applySuggestions([g])}>
+                        <Wand2 />
+                        Apply suggestion
+                      </Button>
+                    )}
+                    {isSkipped(g) ? (
+                      <Button variant="ghost" size="sm" onClick={() => unskipGroup(g)} title="Show this group in future scans again">
+                        <RotateCcw />
+                        Un-skip
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => skipGroups([g])}
+                        title="Leave these files as they are and hide this group from now on (Show skipped brings it back)"
+                      >
+                        <EyeOff />
+                        Skip
+                      </Button>
+                    )}
+                  </div>
                 </div>
                 <div className="space-y-1.5">
                   {g.paths.map((p) => {
                     const f = fileByPath[p];
                     const state = rowStates[p];
                     const trackId = tags[p]?.trackId;
+                    const version = fileVersion(p, fileByPath, tags);
                     return (
                       <div
                         key={p}
@@ -412,6 +527,26 @@ export function DuplicatesPage({
                             {f?.filename ?? p}
                             <span className="ml-2 text-xs text-muted-foreground">{fileFacts(f, tags[p])}</span>
                           </button>
+                          {/* Which edit this is, so radio vs extended reads at a glance. */}
+                          {g.kind === "alternate" && version.kind !== "plain" && (
+                            <span
+                              className={cn(
+                                "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                                version.kind === "extended"
+                                  ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                                  : version.kind === "radio"
+                                    ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                                    : "bg-secondary text-muted-foreground",
+                              )}
+                              title={version.label}
+                            >
+                              {version.kind === "extended"
+                                ? "Extended"
+                                : version.kind === "radio"
+                                  ? "Radio / short edit"
+                                  : version.label.slice(0, 28)}
+                            </span>
+                          )}
                           {trackId && (
                             <button
                               className="shrink-0 rounded border border-input bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground hover:bg-accent"
@@ -490,12 +625,29 @@ export function DuplicatesPage({
               {toRemove.length} file{toRemove.length === 1 ? "" : "s"} marked for removal
               {toRemove.length > 0 && ` (${formatBytes(removeBytes)})`}
             </span>
-            {groups.some((g) => g.kind !== "alternate") && (
-              <Button variant="ghost" size="sm" className="mr-auto ml-3" onClick={() => applySuggestions(groups)}>
-                <Wand2 />
-                Apply all suggestions
-              </Button>
-            )}
+            <div className="mr-auto ml-3 flex gap-1">
+              {visibleGroups.some((g) => !isSkipped(g) && g.paths.some((p) => suggestions[p])) && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => applySuggestions(visibleGroups.filter((g) => !isSkipped(g)))}
+                >
+                  <Wand2 />
+                  Apply all suggestions
+                </Button>
+              )}
+              {undecided.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => skipGroups(undecided)}
+                  title="Hide every group with nothing marked in it, now and in future scans"
+                >
+                  <EyeOff />
+                  Skip the {undecided.length} undecided
+                </Button>
+              )}
+            </div>
             <Button variant="destructive" onClick={runDelete} disabled={toRemove.length === 0}>
               <Trash2 />
               Remove {toRemove.length || ""} to Recycle Bin

@@ -2,6 +2,8 @@ import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   basename,
+  DEFAULT_AI_CLEAN_FIELDS,
+  type AiCleanField,
   type CleanedTrack,
   type OllamaStatus,
   type PendingChange,
@@ -22,9 +24,21 @@ export interface TrackInput {
   title: string;
   year: string;
   genre: string;
+  album: string;
 }
 
-const AI_FIELDS = ["artist", "title", "year", "genre"] as const;
+/** Which fields a run fills, and whether it may overwrite ones that already have a value. */
+export interface CleanOptions {
+  /** Defaults to the long-standing set (artist, title, year, genre + the Album Artist copy). */
+  fields?: AiCleanField[];
+  /** Only fill fields that are empty in the file. */
+  fillEmptyOnly?: boolean;
+}
+
+/** The fields the model itself is asked for ("albumArtist" is a local rule). */
+export function modelFields(fields: AiCleanField[]): Exclude<AiCleanField, "albumArtist">[] {
+  return fields.filter((f): f is Exclude<AiCleanField, "albumArtist"> => f !== "albumArtist");
+}
 
 /**
  * Batch size clamped to a sane range. A zero/negative/NaN value from settings
@@ -68,6 +82,7 @@ export function cleanInputs(paths: string[], map: Record<string, TagData>): Trac
     title: map[p]?.title ?? "",
     year: map[p]?.year ?? "",
     genre: map[p]?.genre ?? "",
+    album: map[p]?.album ?? "",
   }));
 }
 
@@ -80,7 +95,11 @@ export function buildCleanRows(
   paths: string[],
   map: Record<string, TagData>,
   cleanedByIndex: Map<number, CleanedTrack>,
+  options: CleanOptions = {},
 ): { rows: PendingChange[]; unresolved: string[] } {
+  const fields = options.fields ?? DEFAULT_AI_CLEAN_FIELDS;
+  const asked = modelFields(fields);
+  const namesAsked = asked.includes("artist") || asked.includes("title");
   const rows: PendingChange[] = [];
   const unresolved: string[] = [];
   paths.forEach((path, i) => {
@@ -88,19 +107,25 @@ export function buildCleanRows(
     const cleaned = cleanedByIndex.get(i + 1);
     const filename = basename(path);
 
+    // A field the run didn't ask for is ignored even if the model sent one
+    // anyway — "only Year" must never rewrite a title.
+    const got = (f: (typeof asked)[number]) => (asked.includes(f) ? (cleaned?.[f] ?? "").trim() : "");
+
     // Unresolved: no artist AND no title survive, from tags or filename.
-    const finalTitle = (cleaned?.title ?? "").trim() || (tags.title ?? "").trim();
-    const finalArtist = (cleaned?.artist ?? "").trim() || (tags.artist ?? "").trim();
-    if (!finalTitle && !finalArtist) unresolved.push(path);
+    // Only meaningful (and only reported) when the run was naming tracks.
+    const finalTitle = got("title") || (tags.title ?? "").trim();
+    const finalArtist = got("artist") || (tags.artist ?? "").trim();
+    if (namesAsked && !finalTitle && !finalArtist) unresolved.push(path);
 
     // Only build change rows for tracks we actually got a result for.
-    if (!cleaned) return;
+    if (!cleaned && asked.length) return;
 
-    for (const field of AI_FIELDS) {
+    for (const field of asked) {
       const before = (tags[field] ?? "").trim();
-      let after = (cleaned?.[field] ?? "").trim();
+      let after = got(field);
       // Keep the original year unless the AI returned a plausible one.
       if (field === "year" && after && !/^\d{4}([-.].*)?$/.test(after)) after = "";
+      if (options.fillEmptyOnly && before) after = "";
       const changed = !!after && after !== before;
       rows.push({
         id: `${path}::ai::${field}`,
@@ -117,7 +142,7 @@ export function buildCleanRows(
 
     // Rule: if Album Artist is empty and Artist is set, copy it.
     const albumArtist = (tags.albumArtist ?? "").trim();
-    if (!albumArtist && finalArtist) {
+    if (fields.includes("albumArtist") && !albumArtist && finalArtist) {
       rows.push({
         id: `${path}::ai::albumArtist`,
         path,
@@ -165,8 +190,16 @@ export function useAI() {
     settings: Settings,
     model: string,
     onProgress: (done: number, total: number) => void,
+    options: CleanOptions = {},
   ): Promise<CleanResult> => {
     stopRef.current = false;
+    const asked = modelFields(options.fields ?? DEFAULT_AI_CLEAN_FIELDS);
+    // Only the Album Artist copy rule was picked: nothing to ask a model.
+    if (!asked.length) {
+      const valid = paths.filter((p) => map[p]);
+      const { rows, unresolved } = buildCleanRows(valid, map, new Map(), options);
+      return { rows, stopped: false, unresolved, batchErrors: [] };
+    }
     // Thrown (not notified) so the caller's catch clears its busy state, the
     // same way a failed invoke would.
     if (settings.aiBackend === "claude" && !navigator.onLine) throw new Error(CLAUDE_OFFLINE_MESSAGE);
@@ -191,6 +224,7 @@ export function useAI() {
             ? await invoke<CleanedTrack[]>("claude_clean_batch", {
                 tracks: batch,
                 transliterateScripts: settings.transliterateScripts,
+                fields: asked,
                 model: settings.claudeTasks.clean.model || null,
                 effort: settings.claudeTasks.clean.effort || null,
               })
@@ -199,6 +233,7 @@ export function useAI() {
                 model,
                 tracks: batch,
                 transliterateScripts: settings.transliterateScripts,
+                fields: asked,
               });
       } catch (e) {
         // One bad batch (a dropped connection, an answer that isn't JSON)
@@ -221,7 +256,7 @@ export function useAI() {
     if (batchErrors.length && cleanedByIndex.size === 0 && !stopRef.current) {
       throw new Error(batchErrors[0]);
     }
-    const { rows, unresolved } = buildCleanRows(valid, map, cleanedByIndex);
+    const { rows, unresolved } = buildCleanRows(valid, map, cleanedByIndex, options);
     return { rows, stopped: stopRef.current, unresolved, batchErrors };
   };
 

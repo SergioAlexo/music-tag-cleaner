@@ -58,6 +58,7 @@ export interface CleanedTrack {
   title?: string;
   year?: string;
   genre?: string;
+  album?: string;
 }
 
 export interface OllamaStatus {
@@ -135,6 +136,8 @@ export interface DuplicateGroup {
   kind: "duplicate" | "alternate";
   paths: string[];
   score: number;
+  /** How the group was found: "audio" | "tags" | "tags+audio" (see `groupReasonLabel`). */
+  reason?: string;
 }
 
 /**
@@ -379,6 +382,47 @@ export interface Settings {
    * "ask" shows the session dialog; the others are its remembered answers.
    */
   genreClickInManualSession: GenreClickChoice;
+  /**
+   * Fields the AI Clean button looks up and fills (the button's dropdown can
+   * run a different set once without changing this).
+   */
+  aiCleanFields: AiCleanField[];
+  /** When true, AI Clean only fills fields that are empty; filled ones are left alone. */
+  aiCleanFillEmptyOnly: boolean;
+  /**
+   * Duplicate groups the owner skipped ("not now / leave these"), as
+   * `duplicateGroupKey()` values. A later scan hides them until they ask to
+   * see skipped groups again.
+   */
+  duplicateSkipped: string[];
+  /**
+   * What to suggest for "alternate version" groups: nothing, or keep the
+   * extended/full version and remove its shorter radio edits.
+   */
+  duplicateAlternatePolicy: "none" | "keepExtended";
+}
+
+/**
+ * What AI Clean can fill. The first five are asked of the model (must match
+ * CLEAN_FIELDS in ai.rs); "albumArtist" is the local "copy Artist into an
+ * empty Album Artist" rule, which never reaches the model.
+ */
+export const AI_CLEAN_FIELDS = ["artist", "title", "year", "genre", "album", "albumArtist"] as const;
+export type AiCleanField = (typeof AI_CLEAN_FIELDS)[number];
+export const DEFAULT_AI_CLEAN_FIELDS: AiCleanField[] = ["artist", "title", "year", "genre", "albumArtist"];
+export const AI_CLEAN_FIELD_HINTS: Record<AiCleanField, string> = {
+  artist: "Main artist only — no features, labels or channel names",
+  title: "Clean song name — no (Radio Edit), (feat. X), (Official Video)…",
+  year: "Original release year of the song",
+  genre: "One standard genre",
+  album: "Original album / single the song came out on",
+  albumArtist: "Copy Artist into Album Artist when it is empty (no AI needed)",
+};
+
+/** Keeps only known AI Clean fields, in canonical order, without repeats. */
+export function normalizeAiCleanFields(fields: unknown): AiCleanField[] {
+  const list = Array.isArray(fields) ? fields : [];
+  return AI_CLEAN_FIELDS.filter((f) => list.includes(f));
 }
 
 /** Non-Latin scripts AI Clean can optionally transliterate — must match SCRIPTS in ai.rs. */

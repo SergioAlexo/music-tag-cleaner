@@ -64,7 +64,7 @@ export interface AppEnv {
     capitalization: (mode: Capitalization) => Promise<unknown> | void;
     characterRules: () => Promise<unknown> | void;
     removeChars: () => Promise<unknown> | void;
-    aiClean: () => Promise<unknown> | void;
+    aiClean: (fields?: string[]) => Promise<unknown> | void;
     clearFields: (fields: string[]) => Promise<unknown> | void;
     generateIds: () => Promise<unknown> | void;
     rekordboxToTags: () => Promise<unknown> | void;
@@ -534,10 +534,20 @@ export function registerAppActions(reg: ActionRegistry, get: () => AppEnv): void
   reg.register({
     id: "tags.aiClean",
     title: "Preview AI Clean",
-    description: "Runs the app's configured AI backend over the paths and builds a preview (manual backend opens its dialog instead).",
-    params: obj({ paths: paths() }, ["paths"]),
-    run: async (p: { paths: string[] }) => {
-      await withSelection(p.paths, () => env().h.aiClean());
+    description:
+      "Runs the app's configured AI backend over the paths and builds a preview (manual backend opens its dialog instead). `fields` limits the run to some of artist, title, year, genre, album, albumArtist; omitted, the set chosen in Settings is used.",
+    params: obj(
+      {
+        paths: paths(),
+        fields: {
+          type: "array",
+          items: { type: "string", enum: ["artist", "title", "year", "genre", "album", "albumArtist"] },
+        },
+      },
+      ["paths"],
+    ),
+    run: async (p: { paths: string[]; fields?: string[] }) => {
+      await withSelection(p.paths, () => env().h.aiClean(p.fields));
       await reg.settle();
       return { previewBuilt: !!env().pending, rows: env().pending?.filter((r) => r.changed).length ?? 0 };
     },

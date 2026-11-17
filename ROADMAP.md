@@ -2741,6 +2741,100 @@ with none (little-endian COMM size read), and AIFF is untested in Rekordbox.
 Verified in Rekordbox: title/artist/year/genre read from INFO; album, comment,
 composer, track no. not yet checked. Test aid: ignored test `write_wav_sample`.
 
+### 71. AI Clean field picker, missing-artwork fill, junk-art fix, duplicate skips
+
+**Not released yet** (no version bump, uncommitted at the time of writing).
+
+**What/why.** Four asks from the owner. (1) AI Clean always rewrote Artist,
+Title, Year and Genre together; there was no way to say "only look up the
+year". (2) Bulk Find Art overwrote covers that were already fine, and scored
+"Song (Extended Mix)" against the store's plain "Song" too low to auto-pick,
+which is most of a DJ library. (3) Junk Art found repeated pictures but left
+every cluster to be judged by hand. (4) The Duplicates page showed the same
+groups again on every scan, and never suggested anything for radio vs
+extended pairs.
+
+**How.**
+- **AI Clean fields.** `ai.rs` builds the prompt from a field list
+  (`clean_fields`, `CLEAN_FIELDS` = artist/title/year/genre/album): only the
+  rules and output slots for the requested fields are sent, plus an explicit
+  "return ONLY these fields" rule, so a year-only run cannot rewrite titles.
+  No list (older callers) = the classic four. `TrackInput`/`CleanedTrack`
+  gained `album`. TS: `settings.aiCleanFields` + `aiCleanFillEmptyOnly`
+  (settings v27; default = exactly the old behaviour), Settings → AI Clean
+  has the checklist and "Only fill empty fields"; the toolbar button is now a
+  split button (`AiCleanMenu.tsx`): the arrow lists "Only Artist / Title /
+  Year / Genre / Album / Album Artist" (one click runs just that) and a
+  ticked subset can run once or become the default. `buildCleanRows` ignores
+  any field the run did not ask for even if the model sent it. "albumArtist"
+  is the old local copy rule, now optional; picked alone it needs no model.
+  The `tags.aiClean` action takes an optional `fields`.
+- **Find Art.** `artworkMatch.ts`: `baseTitle()` strips version tags,
+  `scoreCandidate` scores the stripped titles (a hair lower, and without the
+  duration penalty, since a different edit is a different length),
+  `primaryArtist()` matches "A & B" against "A", `queryFromFilename()` covers
+  files with no title tag. `findArtworkCandidates` retries under the plain
+  title when the tagged one finds nothing good. The bulk dialog starts with
+  "Only tracks without artwork" ticked (covers on the junk blocklist count as
+  missing), shows what will be skipped, has a real Stop, and every "not sure"
+  row gets **Pick…** to choose by hand without leaving the list.
+- **Junk Art: clustering was matching different covers.** Click-testing on
+  the owner's library showed v0.19's "23 clusters on 427 tracks" were almost
+  all *different, correct* covers (Panda, Imagine Dragons, Nelly Furtado...):
+  the 64-bit dHash at distance 6, and even at distance 0, cannot tell apart
+  the library's typical 16:9 dark-background thumbnails. Any bulk "remove art"
+  on those clusters would have wiped real artwork. Now a dHash match only
+  makes covers *candidates*; each is confirmed with a 12x12 RGB `fine_print`
+  (mean abs diff <= `SAME_IMAGE_FINE_MAD` = 12). New `fine` columns on
+  `art_hash` and `junk_blocklist` (ALTER TABLE migration); written at scan
+  time, filled lazily for older rows (only candidates are read). Blocklist
+  entries from before need every exact-hash copy to agree on one picture to
+  get a print, otherwise they match nothing; `artwork_blocklist_set` takes the
+  `path` of a file carrying the picture. `ClusterDto.id` (dHash is not a key),
+  `leadArtists`, `emptyAlbums`. Owner's library after the fix: 2 clusters of 3
+  tracks (both one song credited to three artists), nothing auto-flagged.
+- **Junk Art: auto-identify.** `lib/junkArt.ts` calls a cluster likely junk
+  when its tags/folders name a record pool (DJcity, BPM Supreme, ...) or it
+  spans 5+ *lead* artists without one shared named album. Badge "likely
+  junk", per-cluster **Real cover** to leave it out, banner with **Replace
+  with real artwork** (Find Art in replace mode: only overwrites on a
+  confident match) and, second, **Remove art from all N** behind a confirm.
+  Loading indicator while the last scan is read. The owner's indexed library
+  has no track mentioning DJcity, so the pool rule is covered by tests only.
+- **Duplicates.** Per-group **Skip** and footer "Skip the N undecided";
+  skipped groups (`duplicateGroupKey` = hash of the path set, in
+  `settings.duplicateSkipped`, capped at 5000) stay hidden in later scans
+  until "Show skipped", where they can be un-skipped. A group that gains or
+  loses a file is a new question and shows again. Alternate groups show an
+  Extended / Radio badge per file (`versionInfo`), and a page-level choice
+  "Suggest keeping the extended, removing radio edits"
+  (`settings.duplicateAlternatePolicy`, default off) drives
+  `suggestAlternates`: same remixer and same clean/dirty only, never
+  instrumentals/acapellas/intro edits/other remixes, never without lengths.
+  Still only a ghost suggestion. Suggestions are now derived (useMemo)
+  instead of hand-maintained state. The detection engine itself
+  (`duplicates.rs`) is unchanged: it already compares audio fingerprints.
+
+**Bugs fixed on the way.** Find Art opened from Junk Art rendered *behind*
+the Junk Art dialog (both z-50, wrong DOM order); closing the bulk dialog was
+the only way to stop a run; `groupReasonLabel` (audio / tags / tags+audio)
+was written in v0.19 and never shown; the AI Clean tooltip claimed "local Ollama model" on
+every backend; byte-identical copies suggested keeping "Song (1).mp3" over
+"Song.mp3" (alphabetical tie-break; now `looksLikeCopy` loses the tie).
+
+**Verification.** `tsc`, `npm run build`, vitest 408, `cargo test` 269 (new:
+prompt fields, fine print vs re-encode/rescale/different pictures, same-dHash
+non-clusters, blocklist confirmation, lead artist), mcp 9. Click-tested in
+`tauri dev` on generated tracks: AI Clean dropdown (Album Artist only; Year
+only on the Claude backend: 6 year changes, nothing else), Settings field
+picker (prompt viewer shows only YEAR), Find Art (6/6 applied incl. extended
+mix, instrumental, untagged file), Junk Art before/after the fix against the
+real library (read-only), Duplicates (badges, keep-extended suggestion,
+Skip remembered across a rescan, Show skipped, Un-skip). Not clicked: Find
+Art's **Pick…** row button. `owner_library_clusters` survey re-run read-only.
+Known and left alone: the backlog item about a fragmented genuine duplicate
+being classed as "alternate".
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —

@@ -15,6 +15,8 @@ interface Props {
   paths: string[];
   tags: Record<string, TagData>;
   transliterateScripts: string[];
+  /** Fields this run asks the AI for; the prompt carries rules for these only. */
+  fields: string[];
   chunkSize: number;
   onChunkSizeChange: (size: number) => void;
   onCancel: () => void;
@@ -56,6 +58,7 @@ export function ManualAIDialog({
   paths,
   tags,
   transliterateScripts,
+  fields,
   chunkSize,
   onChunkSizeChange,
   onCancel,
@@ -89,7 +92,7 @@ export function ManualAIDialog({
     let cancelled = false;
     (async () => {
       try {
-        const text = await invoke<string>("ai_clean_prompt", { tracks: inputs, transliterateScripts });
+        const text = await invoke<string>("ai_clean_prompt", { tracks: inputs, transliterateScripts, fields });
         if (!cancelled) setPrompt(text);
       } catch (e) {
         if (!cancelled) setPrompt(`Could not build the prompt: ${String(e)}`);
@@ -98,7 +101,9 @@ export function ManualAIDialog({
     return () => {
       cancelled = true;
     };
-  }, [inputs, transliterateScripts]);
+    // `fields` is a fresh array each render; its content is what matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inputs, transliterateScripts, fields.join(",")]);
 
   // Parse while the user pastes, so a bad answer is caught before they move on.
   const text = texts[current] ?? "";

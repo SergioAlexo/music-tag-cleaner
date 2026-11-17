@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  baseTitle,
+  primaryArtist,
+  queryFromFilename,
   goodEnough,
   isCompilation,
   normalize,
@@ -87,5 +90,49 @@ describe("pickBest / goodEnough", () => {
   it("detects compilation names", () => {
     expect(isCompilation({ kind: "", release: "DJ Pool Hits Vol. 23", releaseArtist: "X" })).toBe(true);
     expect(isCompilation({ kind: "Album", release: "Discovery", releaseArtist: "Daft Punk" })).toBe(false);
+  });
+});
+
+describe("version-tagged titles", () => {
+  it("strips version tags but keeps brackets that are part of the name", () => {
+    expect(baseTitle("Titanium (Extended Mix)")).toBe("Titanium");
+    expect(baseTitle("Titanium - Radio Edit")).toBe("Titanium");
+    expect(baseTitle("Levels [Original Mix] (Clean)")).toBe("Levels");
+    expect(baseTitle("Song (Part 2)")).toBe("Song (Part 2)");
+    expect(baseTitle("(Extended Mix)")).toBe("(Extended Mix)");
+  });
+
+  it("an extended mix clears the auto-pick bar against the plain single", () => {
+    const dj = { artist: "Daft Punk", title: "Get Lucky (Extended Mix)", durationSecs: 480 };
+    const ranked = rankCandidates(dj, [cand({ kind: "Single", trackCount: 1 })]);
+    // Different length is expected for a different edit, so no duration penalty.
+    expect(ranked[0].confidence).toBeGreaterThanOrEqual(0.95);
+    expect(pickBest(ranked, 0.95)?.id).toBe("1");
+  });
+
+  it("still penalises a wrong length when the titles match as written", () => {
+    const ranked = rankCandidates({ ...q, durationSecs: 200 }, [cand({})]);
+    expect(ranked[0].confidence).toBeLessThan(0.75);
+  });
+
+  it("matches a guest-billed artist against the lead artist", () => {
+    const ranked = rankCandidates({ artist: "Daft Punk & Pharrell Williams", title: "Get Lucky" }, [cand({})]);
+    expect(ranked[0].confidence).toBeGreaterThanOrEqual(0.85);
+    expect(primaryArtist("Daft Punk, Pharrell Williams")).toBe("Daft Punk");
+  });
+
+  it("does not let a different song through on artist alone", () => {
+    const ranked = rankCandidates({ artist: "Daft Punk", title: "Around the World (Radio Edit)" }, [cand({})]);
+    expect(pickBest(ranked, 0.75)).toBeNull();
+  });
+});
+
+describe("queryFromFilename", () => {
+  it("splits Artist - Title and drops the extension and track number", () => {
+    expect(queryFromFilename("C:\\Music\\01 - Daft Punk - Get Lucky (Radio Edit).mp3")).toEqual({
+      artist: "Daft Punk",
+      title: "Get Lucky (Radio Edit)",
+    });
+    expect(queryFromFilename("/m/Get_Lucky.flac")).toEqual({ artist: "", title: "Get Lucky" });
   });
 });
