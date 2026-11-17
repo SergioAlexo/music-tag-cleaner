@@ -2835,9 +2835,9 @@ Art's **Pick…** row button. `owner_library_clusters` survey re-run read-only.
 Known and left alone: the backlog item about a fragmented genuine duplicate
 being classed as "alternate".
 
-### 72. Open / Move selected tracks to a new tab
+### 72. Open / Move selected tracks to a new tab — v0.20.1
 
-**Not released yet.**
+**Released as v0.20.1.**
 
 **What/why.** The owner wanted to pick some songs out of a tab and work on
 them on their own. Tabs could only be filled empty, from a sidebar genre/album
