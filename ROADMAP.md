@@ -2741,9 +2741,9 @@ with none (little-endian COMM size read), and AIFF is untested in Rekordbox.
 Verified in Rekordbox: title/artist/year/genre read from INFO; album, comment,
 composer, track no. not yet checked. Test aid: ignored test `write_wav_sample`.
 
-### 71. AI Clean field picker, missing-artwork fill, junk-art fix, duplicate skips
+### 71. AI Clean field picker, missing-artwork fill, junk-art fix, duplicate skips — v0.20.0
 
-**Not released yet** (no version bump, uncommitted at the time of writing).
+**Released as v0.20.0.**
 
 **What/why.** Four asks from the owner. (1) AI Clean always rewrote Artist,
 Title, Year and Genre together; there was no way to say "only look up the
