@@ -6,6 +6,9 @@ import { EMPTY_HISTORY, type HistorySnapshot, type useHistory } from "./useHisto
 import {
   closeTab,
   EMPTY_SOURCE,
+  insertAfter,
+  MANUAL_SOURCE,
+  splitOff,
   tabTitle,
   type SessionTabState,
 } from "../lib/sessionTabs";
@@ -109,6 +112,37 @@ export function useSessionTabs({ filesApi, history, cancelGenreLoad, releasePrev
     return true;
   };
 
+  /**
+   * "Open / Move to new tab": a new tab, right after the current one, holding
+   * `paths` from the current tab, all ticked so the next action applies to
+   * them. `move` also takes them out of the current tab (only the tab's list:
+   * files on disk are untouched, and its undo history stays as it was). The
+   * files travel as they are, so tracks that aren't in the library index move
+   * just the same.
+   */
+  const openSelectionInNewTab = async (paths: string[], move: boolean): Promise<boolean> => {
+    const { taken, kept } = splitOff(filesApi.files, paths);
+    if (!taken.length || !(await releasePreview())) return false;
+    const takenPaths = new Set(taken.map((f) => f.path));
+    const parked = parkActive().map((t) => {
+      if (!move || t.id !== activeId || !t.snapshot) return t;
+      const snapshot = { ...t.snapshot, files: kept, selected: t.snapshot.selected.filter((p) => !takenPaths.has(p)) };
+      return { ...t, snapshot, title: tabTitle(snapshot.source, kept.map((f) => f.path)) };
+    });
+    const fresh: Tab = {
+      ...emptyTab(),
+      snapshot: {
+        files: taken,
+        selected: [...takenPaths],
+        source: MANUAL_SOURCE,
+        history: EMPTY_HISTORY,
+      },
+    };
+    load(fresh);
+    setState({ tabs: activate(insertAfter(parked, activeId, fresh), fresh.id), activeId: fresh.id });
+    return true;
+  };
+
   /** Closes a tab, asking first when it holds undo history that would be lost. */
   const requestClose = async (id: string) => {
     const view = views.find((v) => v.id === id);
@@ -133,5 +167,5 @@ export function useSessionTabs({ filesApi, history, cancelGenreLoad, releasePrev
   /** Forgets the active tab's undo history (its files are replaced by the caller). */
   const resetHistory = () => history.restore(EMPTY_HISTORY);
 
-  return { views, activeId, switchTo, openNewTab, requestClose, resetHistory };
+  return { views, activeId, switchTo, openNewTab, openSelectionInNewTab, requestClose, resetHistory };
 }

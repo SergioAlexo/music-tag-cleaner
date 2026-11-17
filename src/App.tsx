@@ -2583,6 +2583,15 @@ This rewrites the ${meta.singular} tag on ${
               onSeparateStems={withTrack("stems", () => void openStems())}
               onConvertFile={withTrack1("convertFile", (f: AudioFile) => openConvert(f))}
               onMoveToCollection={openOrganize}
+              onOpenInNewTab={(paths, move) => {
+                analytics.track(move ? "moveToNewTab" : "openInNewTab");
+                void sessionTabs.openSelectionInNewTab(paths, move).then((ok) => {
+                  if (ok) {
+                    const n = paths.length;
+                    notify(`${move ? "Moved" : "Opened"} ${n} track${n === 1 ? "" : "s"} in a new tab`, "success");
+                  }
+                });
+              }}
               onFetchLyrics={withTrack1("fetchLyrics", runFetchLyrics)}
               onDetectLanguage={withTrack1("detectLanguage", runDetectLanguage)}
               onStandardizeArt={withTrack("standardizeArt", standardizeArtwork)}

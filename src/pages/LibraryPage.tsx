@@ -144,6 +144,7 @@ interface Props {
   onSeparateStems: () => void;
   onConvertFile: (file: AudioFile) => void;
   onMoveToCollection?: (paths: string[]) => void;
+  onOpenInNewTab?: (paths: string[], move: boolean) => void;
   onFetchLyrics?: (paths: string[]) => void;
   onDetectLanguage?: (paths: string[]) => void;
   onStandardizeArt: () => void;
@@ -237,6 +238,7 @@ export function LibraryPage({
   onSeparateStems,
   onConvertFile,
   onMoveToCollection,
+  onOpenInNewTab,
   onFetchLyrics,
   onDetectLanguage,
   onStandardizeArt,
@@ -829,6 +831,7 @@ export function LibraryPage({
               onConvertFile={onConvertFile}
               onFindArtwork={onFindArtwork}
               onMoveToCollection={onMoveToCollection}
+              onOpenInNewTab={onOpenInNewTab}
               onFetchLyrics={onFetchLyrics}
               onDetectLanguage={onDetectLanguage}
               trackIdFormats={tidFormats}

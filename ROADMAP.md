@@ -2835,6 +2835,29 @@ Art's **Pick…** row button. `owner_library_clusters` survey re-run read-only.
 Known and left alone: the backlog item about a fragmented genuine duplicate
 being classed as "alternate".
 
+### 72. Open / Move selected tracks to a new tab
+
+**Not released yet.**
+
+**What/why.** The owner wanted to pick some songs out of a tab and work on
+them on their own. Tabs could only be filled empty, from a sidebar genre/album
+or a playlist.
+
+**How.** The track table's right-click menu gains **Open N in new tab** and
+**Move N to new tab** (acts on the right-clicked selection).
+`useSessionTabs.openSelectionInNewTab(paths, move)` parks the current tab
+(minus the taken files when moving, its selection pruned, its undo history
+untouched), and opens a tab right after it with those files, all ticked, as
+a manual session with empty history. The `AudioFile` rows travel as they
+are, so files outside the library index work too (the playlist path reloads
+from the index instead). Pure helpers `splitOff` (keeps the tab's order) and
+`insertAfter` in `lib/sessionTabs.ts`.
+
+**Verification.** vitest 412 (new `splitOff` / `insertAfter` cases), `npm
+run build`. Click-tested in `tauri dev` with five generated tracks: Move 2
+of 5 (new tab holds the 2 ticked, source keeps 3), Open 1 in new tab (tab
+inserted after its source, source unchanged).
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —
