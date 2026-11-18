@@ -1,0 +1,35 @@
+{
+  "id": "preset-translator",
+  "name": "Preset Translator",
+  "version": "0.1.0",
+  "author": "Music Tag Cleaner",
+  "description": "Converts Serum and Serum 2 presets to Vital. Adds a Presets toolbar button; needs the presetforge engine.",
+  "apiVersion": 1,
+  "kind": "plugin",
+  "permissions": ["presets", "ui.control"],
+  "requires": { "engines": [{ "id": "presetforge", "version": ">=0.1" }] },
+  "entry": "index.js",
+  "contributes": {
+    "buttons": [
+      { "id": "open", "label": "Presets", "title": "Open the synth presets converter", "action": "presets.open" }
+    ],
+    "actions": [
+      {
+        "id": "convertFolder",
+        "title": "Convert a folder of synth presets to Vital",
+        "params": { "type": "object", "properties": { "folder": { "type": "string" } }, "required": ["folder"] }
+      },
+      {
+        "id": "makeFromPrompt",
+        "title": "Make a preset from a text prompt (coming later)",
+        "params": { "type": "object", "properties": { "prompt": { "type": "string" } } }
+      }
+    ],
+    "settings": [
+      { "key": "outputFolder", "label": "Output folder", "type": "string", "default": "" },
+      { "key": "serumRoot", "label": "Serum data folder (wavetables)", "type": "string", "default": "" },
+      { "key": "maxFrames", "label": "Max wavetable frames", "type": "number", "default": 64 },
+      { "key": "autoVerify", "label": "Verify converted presets automatically", "type": "boolean", "default": false }
+    ]
+  }
+}

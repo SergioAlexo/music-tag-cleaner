@@ -7,6 +7,16 @@
  *   /// <reference path="../../plugins/sdk.d.ts" />
  *
  * See PLUGINS.md for the manifest format and permissions.
+ *
+ * Manifest notes that have no runtime type here:
+ *  - Permission `presets` lets `mtc.call("presets.scan" | "presets.convert" |
+ *    "presets.verify" | "presets.apply" | "presets.report" | "presets.open", ...)`
+ *    run. Conversions are staged; `presets.apply` writes only into the output
+ *    folder you pass and always asks the person first.
+ *  - Optional `requires: { engines: [{ id, version }] }` declares a host-managed
+ *    engine (e.g. `presetforge`, version range like ">=0.1"). The app installs it
+ *    from its own allowlisted index; `presets.*` only work while a plugin that
+ *    requires `presetforge` is enabled.
  */
 
 /** The tags the app hands to column code and `track.get` (field names as shown in the Columns menu). */

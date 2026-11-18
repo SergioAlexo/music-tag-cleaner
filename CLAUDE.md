@@ -23,6 +23,7 @@ requests mean this one.
 | Track table (virtualized >60 rows) | `src/components/TrackTable.tsx`, `src/hooks/useVirtualRows.ts` |
 | Settings + migrations (`CURRENT_SETTINGS_VERSION`) | `src/hooks/useSettings.ts` — bump + add a migration step for any settings shape change; every save also lands in `settings.backup.json` (`commands/settings_backup.rs`), restored when the store comes back empty |
 | Search (one implementation everywhere; reads tags, not visible columns) | `src/lib/trackSearch.ts` |
+| Synth presets (Preset Translator: dialog, commands, engine) | `src/components/PresetsDialog.tsx`, `src/lib/presets.ts`, `src-tauri/src/commands/presets.rs` + `engines.rs`, `presetforge/` (Python engine), example plugin `plugins-examples/preset-translator/` |
 | YouTube Music import page | `src/pages/YtMusicImportPage.tsx`, `src/components/LibrarySearchPanel.tsx` |
 | Playlist matcher / match log | `src/lib/ytMatch.ts` (+ tests), `src/lib/ytMatchLog.ts` |
 | yt-dlp fetch + import sessions (sqlite) | `src-tauri/src/commands/ytmusic.rs` |

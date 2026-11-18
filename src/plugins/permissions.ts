@@ -47,6 +47,13 @@ const EXACT: Record<string, string> = {
   "files.delete": "files.delete",
   "duplicates.delete": "files.delete",
   "backup.restore": "files.delete",
+  // synth presets (host-side engine; writes only into the chosen output folder)
+  "presets.open": "presets",
+  "presets.scan": "presets",
+  "presets.convert": "presets",
+  "presets.verify": "presets",
+  "presets.apply": "presets",
+  "presets.report": "presets",
   // view state
   "table.select": "ui.control",
   "table.setColumns": "ui.control",

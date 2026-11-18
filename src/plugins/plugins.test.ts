@@ -16,6 +16,27 @@ describe("manifest validation", () => {
     expect(r.ok).toBe(true);
   });
 
+  it("validates the optional requires.engines", () => {
+    const ok = validateManifest(baseManifest({ requires: { engines: [{ id: "presetforge", version: ">=0.1" }] } }));
+    expect(ok.ok && ok.manifest.requires?.engines?.[0].id).toBe("presetforge");
+    const none = validateManifest(baseManifest());
+    expect(none.ok && none.manifest.requires).toBeUndefined();
+    const bad = (requires: unknown) => validateManifest(baseManifest({ requires }));
+    expect(bad("x").ok).toBe(false);
+    expect(bad({ engines: "presetforge" }).ok).toBe(false);
+    expect(bad({ engines: [{ id: "Bad Id", version: ">=0.1" }] }).ok).toBe(false);
+    expect(bad({ engines: [{ id: "presetforge", version: "latest" }] }).ok).toBe(false);
+    expect(bad({ engines: [{ id: "presetforge" }] }).ok).toBe(false);
+    expect(bad({ engines: [{ id: "a-b", version: "1" }, { id: "a-b", version: "1" }] }).ok).toBe(false);
+  });
+
+  it("accepts the presets permission and maps presets.* to it", () => {
+    expect(validateManifest(baseManifest({ permissions: ["presets"] })).ok).toBe(true);
+    expect(checkActionPermission([], "presets.convert", { readOnly: false }, "demo").allowed).toBe(false);
+    expect(checkActionPermission(["presets"], "presets.apply", { readOnly: false }, "demo").allowed).toBe(true);
+    expect(checkActionPermission(["read", "tags.write"], "presets.scan", { readOnly: true }, "demo").allowed).toBe(false);
+  });
+
   it("reports every problem, not just the first", () => {
     const r = validateManifest({ id: "Bad Id", name: "", version: "1", apiVersion: 9, permissions: ["root"] });
     expect(r.ok).toBe(false);
@@ -290,6 +311,20 @@ describe("manager: approval gate", () => {
     expect(t.registry.has("plugin.demo.x")).toBe(true);
   });
 
+  it("hasEnabledEngine is true only for an enabled, approved plugin that requires the engine", async () => {
+    const t = makeEnv();
+    const { manager, backend } = makeManager(t);
+    const m = JSON.stringify(baseManifest({ requires: { engines: [{ id: "presetforge", version: ">=0.1" }] } }), null, 2);
+    backend.files.set("demo", { id: "demo", manifest: m, code: null });
+    await manager.refresh();
+    expect(manager.hasEnabledEngine("presetforge")).toBe(false); // not reviewed
+    await manager.approveInstalled("demo");
+    expect(manager.hasEnabledEngine("presetforge")).toBe(true);
+    expect(manager.hasEnabledEngine("other")).toBe(false);
+    await manager.disable("demo");
+    expect(manager.hasEnabledEngine("presetforge")).toBe(false);
+  });
+
   it("an invalid proposal returns the problems", async () => {
     const t = makeEnv();
     const { manager } = makeManager(t);
@@ -389,5 +424,34 @@ describe("bundled example plugins (plugins-examples/)", () => {
     manager.setPluginValues("bpm-range-column", { step: 5 });
     await flush();
     expect(await inst.computeColumn("range", rows)).toEqual(["125-129", ""]);
+  });
+  it("preset-translator converts a folder through presets.* and defers prompts", async () => {
+    const t = makeEnv();
+    const stub = (id: string, result: unknown, readOnly = false) =>
+      t.registry.register({
+        id,
+        title: id,
+        params: { type: "object", properties: {}, additionalProperties: true },
+        readOnly,
+        run: (params) => {
+          t.calls.push({ id, params });
+          return result;
+        },
+      });
+    stub("presets.open", { dialogOpened: true });
+    stub("presets.scan", { items: [{ path: "a.SerumPreset", supported: true }, { path: "b.fxp", supported: false }] }, true);
+    stub("presets.convert", { batchId: "b1", items: [] });
+    const { manager, backend } = makeManager(t);
+    const { manifest, code } = load("preset-translator");
+    backend.files.set("preset-translator", { id: "preset-translator", manifest, code });
+    await manager.refresh();
+    await manager.approveInstalled("preset-translator");
+    await flush();
+    const ctx = { caller: "ui" as const, notify: () => {} };
+    const res = await t.registry.run("plugin.presetTranslator.convertFolder", { folder: "D:/p" }, ctx);
+    expect(res).toMatchObject({ scanned: 2, converted: 1, batchId: "b1" });
+    expect(t.calls.map((c) => c.id)).toEqual(["presets.scan", "presets.convert", "presets.open"]);
+    expect(t.calls[1].params).toEqual({ paths: ["a.SerumPreset"], maxFrames: 64 });
+    await expect(t.registry.run("plugin.presetTranslator.makeFromPrompt", {}, ctx)).rejects.toThrow(/later version/);
   });
 });

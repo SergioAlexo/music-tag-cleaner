@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { AlertTriangle, ShieldCheck } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { AlertTriangle, Download, ShieldCheck } from "lucide-react";
 import type { Proposal } from "../plugins/manager";
 import { PERMISSION_INFO } from "../plugins/manifest";
 import { Button, cn } from "./ui";
@@ -23,6 +24,84 @@ const RISK_CLASS = {
   medium: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
   high: "bg-destructive/15 text-destructive",
 } as const;
+
+export interface EngineStatus {
+  id: string;
+  installedVersion?: string;
+  path?: string;
+  devOverride: boolean;
+  available?: { version: string; size: number };
+}
+
+/** Lists the engines this plugin needs, with their install state and an Install button. */
+function EngineRequirements({ engines }: { engines: { id: string; version: string }[] }) {
+  const [status, setStatus] = useState<EngineStatus[] | null>(null);
+  const [error, setError] = useState("");
+  const [installing, setInstalling] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    invoke<EngineStatus[]>("engines_status")
+      .then((s) => {
+        setStatus(s);
+        setError("");
+      })
+      .catch((e) => setError(String(e)));
+  }, []);
+  useEffect(refresh, [refresh]);
+
+  const install = async (id: string) => {
+    setInstalling(id);
+    setError("");
+    try {
+      await invoke("engine_install", { id });
+      refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setInstalling(null);
+    }
+  };
+
+  return (
+    <div>
+      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Needs</div>
+      <ul className="space-y-1.5">
+        {engines.map((e) => {
+          const st = status?.find((x) => x.id === e.id);
+          const installed = !!st && (st.installedVersion !== undefined || st.devOverride);
+          return (
+            <li key={e.id} className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-secondary-foreground">{e.id}</span>
+              <span>
+                engine {e.version}
+                {st?.available ? ` (about ${Math.max(1, Math.round(st.available.size / 1048576))} MB download)` : ""}
+              </span>
+              {status === null ? (
+                <span className="text-muted-foreground">checking...</span>
+              ) : installed ? (
+                <span className="text-emerald-600 dark:text-emerald-400">
+                  installed{st?.installedVersion ? ` (v${st.installedVersion})` : st?.devOverride ? " (dev override)" : ""}
+                </span>
+              ) : (
+                <>
+                  <span className="text-amber-600 dark:text-amber-400">not installed</span>
+                  {st?.available && (
+                    <Button size="sm" variant="outline" disabled={installing !== null} onClick={() => install(e.id)}>
+                      <Download className="mr-1 h-3.5 w-3.5" />
+                      {installing === e.id ? "Installing..." : "Install"}
+                    </Button>
+                  )}
+                  {st && !st.available && <span className="text-muted-foreground">no download is published yet</span>}
+                </>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
+    </div>
+  );
+}
 
 /**
  * The install / review prompt (D2): permissions and the full code are shown
@@ -105,6 +184,8 @@ export function PluginReviewDialog({
               </p>
             )}
           </div>
+
+          {manifest.requires?.engines?.length ? <EngineRequirements engines={manifest.requires.engines} /> : null}
 
           {contributes.length > 0 && (
             <div>
