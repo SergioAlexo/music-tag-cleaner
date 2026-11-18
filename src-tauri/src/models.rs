@@ -109,6 +109,10 @@ pub struct TrackInput {
     pub title: String,
     pub year: String,
     pub genre: String,
+    /// Context for identifying the song (and the value to improve when the
+    /// run asks for Album). Older callers don't send it.
+    #[serde(default)]
+    pub album: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -118,6 +122,8 @@ pub struct CleanedTrack {
     pub title: Option<String>,
     pub year: Option<String>,
     pub genre: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album: Option<String>,
 }
 
 /// One Library track as the AI playlist prompt sees it (D5). `id` is the

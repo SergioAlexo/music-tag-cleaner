@@ -28,6 +28,8 @@ import type {
 } from "../types";
 import { CONVERT_PRESETS } from "../types";
 import {
+  AI_CLEAN_FIELDS,
+  AI_CLEAN_FIELD_HINTS,
   CAP_OPTIONS,
   CLEARABLE_FIELDS,
   DJ_APP_LABELS,
@@ -788,6 +790,7 @@ export function SettingsPage({
     try {
       const text = await invoke<string>("ai_preview_prompt", {
         transliterateScripts: settings.transliterateScripts,
+        fields: settings.aiCleanFields,
       });
       setPromptText(text);
     } catch (e) {
@@ -1170,9 +1173,48 @@ export function SettingsPage({
       <Card>
         <CardHeader
           title="AI Clean"
-          hint="What the AI Clean button actually does to Artist, Title, Year, and Genre"
+          hint="Which fields the AI Clean button looks up and fills, and how"
         />
         <div className="px-5 py-2">
+          <div className="py-3">
+            <div className="mb-1 text-sm font-medium">Fields to fill</div>
+            <p className="mb-2 text-xs text-muted-foreground">
+              The AI Clean button works on the ticked fields and leaves every other field alone. For a
+              one-off run on a single field (say, only Year), use the arrow next to the button.
+            </p>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1.5">
+              {AI_CLEAN_FIELDS.map((f) => (
+                <label key={f} className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-1 accent-[var(--primary)]"
+                    checked={settings.aiCleanFields.includes(f)}
+                    onChange={() =>
+                      set(
+                        "aiCleanFields",
+                        AI_CLEAN_FIELDS.filter((k) =>
+                          k === f ? !settings.aiCleanFields.includes(k) : settings.aiCleanFields.includes(k),
+                        ),
+                      )
+                    }
+                  />
+                  <span>
+                    {FIELD_LABELS[f] ?? f}
+                    <span className="block text-xs text-muted-foreground">{AI_CLEAN_FIELD_HINTS[f]}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            {settings.aiCleanFields.length === 0 && (
+              <p className="mt-2 text-xs text-amber-500">No fields ticked — the AI Clean button is disabled.</p>
+            )}
+          </div>
+          <Row
+            label="Only fill empty fields"
+            hint="Never overwrite a field that already has a value — AI Clean only fills the gaps"
+          >
+            <Toggle checked={settings.aiCleanFillEmptyOnly} onChange={(v) => set("aiCleanFillEmptyOnly", v)} />
+          </Row>
           <Row label="See the exact instructions" hint="The real prompt sent to the model, not a summary">
             <Button variant="secondary" size="sm" onClick={viewPrompt}>
               View AI instructions
@@ -1982,9 +2024,9 @@ export function SettingsPage({
               </button>
             </div>
             <p className="mb-4 text-xs text-muted-foreground">
-              This is the literal system prompt sent to the model for every AI Clean run, including
-              your current foreign-alphabet choices above. The track list (filename, artist, title,
-              year, genre) is appended after it.
+              This is the literal system prompt sent to the model for every AI Clean run, for the
+              fields ticked above and your current foreign-alphabet choices. The track list (filename,
+              artist, title, year, genre, album) is appended after it.
             </p>
             {promptLoading ? (
               <p className="text-xs text-muted-foreground">Loading…</p>

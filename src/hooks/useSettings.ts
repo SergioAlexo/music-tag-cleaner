@@ -2,13 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { load, type Store } from "@tauri-apps/plugin-store";
 import type { Settings } from "../types";
-import { DEFAULT_STEM_OPTIONS } from "../types";
+import { DEFAULT_AI_CLEAN_FIELDS, DEFAULT_STEM_OPTIONS, normalizeAiCleanFields } from "../types";
 import { DEFAULT_SYNC_SETTINGS } from "../lib/djSync";
 import { DEFAULT_LYRICS_OUTPUT, normalizeOutputSettings } from "../lib/lyricsOutput";
 import { DEFAULT_FLAG_EXTRA_CHARS, DEFAULT_REPLACEMENTS } from "../lib/standardize";
 
 // 22 is reserved for C1 (playlists), 25 for F2; gaps are fine.
-export const CURRENT_SETTINGS_VERSION = 26;
+export const CURRENT_SETTINGS_VERSION = 27;
 
 export const DEFAULT_SETTINGS: Settings = {
   aiBackend: "ollama",
@@ -90,6 +90,10 @@ export const DEFAULT_SETTINGS: Settings = {
   convertOutput: "alongside",
   stemOptions: DEFAULT_STEM_OPTIONS,
   genreClickInManualSession: "ask",
+  aiCleanFields: DEFAULT_AI_CLEAN_FIELDS,
+  aiCleanFillEmptyOnly: false,
+  duplicateSkipped: [],
+  duplicateAlternatePolicy: "none",
 };
 
 const STORE_FILE = "settings.json";
@@ -122,6 +126,15 @@ export function mergeWithDefaults(saved: Partial<Settings>): Settings {
   // crashes `.toLocaleString()` on the Settings page.
   merged.usage = sanitizeNumbers(saved.usage, DEFAULT_SETTINGS.usage);
   merged.plan = { ...saved.plan, ...sanitizeNumbers(saved.plan, DEFAULT_SETTINGS.plan) };
+  // A hand-edited or half-written settings file must not leave AI Clean with
+  // unknown fields, or the Duplicates page iterating a non-array.
+  merged.aiCleanFields = Array.isArray(saved.aiCleanFields)
+    ? normalizeAiCleanFields(saved.aiCleanFields)
+    : DEFAULT_SETTINGS.aiCleanFields;
+  merged.duplicateSkipped = Array.isArray(saved.duplicateSkipped)
+    ? saved.duplicateSkipped.filter((k): k is string => typeof k === "string")
+    : [];
+  if (merged.duplicateAlternatePolicy !== "keepExtended") merged.duplicateAlternatePolicy = "none";
   return merged;
 }
 
@@ -265,6 +278,10 @@ export function migrate(s: Settings, savedVersion: number): Settings {
     // F3: lyrics output window (style, size, sync offset, background, mode, monitor).
     next.lyricsOutput = normalizeOutputSettings(next.lyricsOutput);
   }
+  // v27: aiCleanFields / aiCleanFillEmptyOnly (AI Clean field picker),
+  // duplicateSkipped / duplicateAlternatePolicy (Duplicates page). All filled
+  // in and validated by mergeWithDefaults, so no data step is needed; the
+  // default field set is exactly what AI Clean did before the picker existed.
   next.settingsVersion = CURRENT_SETTINGS_VERSION;
   return next;
 }

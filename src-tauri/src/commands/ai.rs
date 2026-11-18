@@ -40,24 +40,41 @@ fn script_rules(transliterate: &[String]) -> String {
         .join("\n")
 }
 
-/// Builds the exact prompt sent to the model. `transliterate` lists the
-/// scripts (from `SCRIPTS`) the user wants romanized instead of preserved —
-/// also used verbatim by `ai_preview_prompt` so the Settings UI can show the
-/// user precisely what will be sent, never a hand-written summary that could
-/// drift out of sync.
-fn build_system_prompt(transliterate: &[String]) -> String {
-    let rules = script_rules(transliterate);
-    format!(
-        r#"You are a music metadata cleanup expert. You will receive a list of audio tracks with messy metadata and must return cleaned versions.
-RULES:
-1. ARTIST: Keep only the main/lead artist. Remove all of the following from the artist field:
+/// Fields AI Clean can be asked to return, in prompt order. "album" is opt-in;
+/// the first four are the long-standing default. Must match `AI_CLEAN_FIELDS`
+/// in `src/types.ts` (which also has "albumArtist", a local copy rule the
+/// model never sees).
+pub(crate) const CLEAN_FIELDS: &[&str] = &["artist", "title", "year", "genre", "album"];
+const DEFAULT_CLEAN_FIELDS: &[&str] = &["artist", "title", "year", "genre"];
+
+/// The requested fields in canonical order. Nothing recognisable (an older
+/// caller that sends no list, or only "albumArtist") means the default four,
+/// so a prompt is never built that asks the model for no fields at all.
+pub(crate) fn clean_fields(requested: Option<&[String]>) -> Vec<&'static str> {
+    let picked: Vec<&'static str> = match requested {
+        Some(list) => CLEAN_FIELDS
+            .iter()
+            .copied()
+            .filter(|f| list.iter().any(|r| r.eq_ignore_ascii_case(f)))
+            .collect(),
+        None => Vec::new(),
+    };
+    if picked.is_empty() {
+        DEFAULT_CLEAN_FIELDS.to_vec()
+    } else {
+        picked
+    }
+}
+
+const ARTIST_RULE: &str = r#"ARTIST: Keep only the main/lead artist. Remove all of the following from the artist field:
    - Legal full names (e.g. "Benito Antonio Martinez Ocasio" → remove, keep "Bad Bunny")
    - Co-writers, producers, publishers
    - Featured artists (ft., feat., &, x, N, -)
    - Duplicate names or alternative spellings of the same artist
    - Record label names
-   - YouTube channel names (if the artist field looks like a channel, decode the real artist from the title)
-2. TITLE: Keep only the clean song name. Strip ALL of the following suffixes/additions:
+   - YouTube channel names (if the artist field looks like a channel, decode the real artist from the title)"#;
+
+const TITLE_RULE: &str = r#"TITLE: Keep only the clean song name. Strip ALL of the following suffixes/additions:
    - (Radio Edit), (Club Mix), (Extended Mix), (Original Mix), (Album Version)
    - (feat. X), (ft. X), (with X), (Feat X), -Feat-
    - (Remastered YYYY), (Remastered), [Remastered]
@@ -67,42 +84,103 @@ RULES:
    - (Remix), (X Remix), -X Remix-, [X Remix]
    - (Slowed), (Sped Up), (Pitched), (Nightcore)
    - Any version tags in any language
-   - YouTube video titles embedded in the tag — extract just the song name
-3. YEAR: Return the ORIGINAL release year of the song (when it was first ever released commercially or publicly), NOT the year of a remaster, re-release, streaming upload, or compilation. Use your music knowledge. If you are not certain, leave the existing year unchanged.
-4. GENRE: Normalize to a standard single genre. Use common terms like: Pop, Rock, Hip-Hop, R&B, Reggaeton, House, Techno, Trance, Electronic, Dance, Folk, Country, Jazz, Classical, Metal, Punk, Soul, Funk, Latin, Reggae, Indie, Alternative. Do not use subgenres unless they are very widely recognized.
-5. Do NOT change Album, Track Number, Disc Number, or Album Artist unless they are clearly wrong.
-6. SCRIPTS: Apply this per writing system, to both Artist and Title:
-{rules}
-   Any other non-Latin script not listed above: keep it exactly as written.
-7. For mashups (two songs blended together), keep the mashup creator as the artist and format the title as: "Song1 N Song2"
-8. FILENAME FALLBACK: Every track includes a "filename" field. When the artist or title is empty, missing, or clearly junk, derive them from the filename — filenames are usually "Artist - Title" or "Artist - Title (Mix)". Apply all the cleaning rules above to values you take from the filename. If, after using both the metadata AND the filename, you still cannot determine the artist or the title, return an empty string "" for that field (do not guess a random value).
-OUTPUT FORMAT: Return ONLY a valid JSON array, no explanation, no markdown, no preamble:
-[
-  {{
-    "index": 1,
-    "artist": "cleaned artist",
-    "title": "cleaned title",
-    "year": "YYYY",
-    "genre": "Genre"
-  }},
-  ...
-]"#
+   - YouTube video titles embedded in the tag — extract just the song name"#;
+
+const YEAR_RULE: &str = "YEAR: Return the ORIGINAL release year of the song (when it was first ever released commercially or publicly), NOT the year of a remaster, re-release, streaming upload, or compilation. Use your music knowledge. If you are not certain, leave the existing year unchanged.";
+
+const GENRE_RULE: &str = "GENRE: Normalize to a standard single genre. Use common terms like: Pop, Rock, Hip-Hop, R&B, Reggaeton, House, Techno, Trance, Electronic, Dance, Folk, Country, Jazz, Classical, Metal, Punk, Soul, Funk, Latin, Reggae, Indie, Alternative. Do not use subgenres unless they are very widely recognized.";
+
+const ALBUM_RULE: &str = "ALBUM: Return the name of the original album, EP or single the song was first released on — not a compilation, DJ-pool pack, or \"Various Artists\" collection. Use your music knowledge. If the existing album is already right keep it; if you are not certain, return an empty string \"\".";
+
+/// Builds the exact prompt sent to the model. `transliterate` lists the
+/// scripts (from `SCRIPTS`) the user wants romanized instead of preserved;
+/// `fields` (already through `clean_fields`) are the only ones the model is
+/// asked to return — a "year only" run carries no artist/title rules, so the
+/// model can't "helpfully" rewrite fields nobody asked about. Also used
+/// verbatim by `ai_preview_prompt` so the Settings UI can show the user
+/// precisely what will be sent, never a hand-written summary that could
+/// drift out of sync.
+fn build_system_prompt(transliterate: &[String], fields: &[&str]) -> String {
+    let has = |f: &str| fields.contains(&f);
+    let mut rules: Vec<String> = Vec::new();
+    if has("artist") {
+        rules.push(ARTIST_RULE.to_string());
+    }
+    if has("title") {
+        rules.push(TITLE_RULE.to_string());
+    }
+    if has("year") {
+        rules.push(YEAR_RULE.to_string());
+    }
+    if has("genre") {
+        rules.push(GENRE_RULE.to_string());
+    }
+    if has("album") {
+        rules.push(ALBUM_RULE.to_string());
+    }
+    let names_edited = has("artist") || has("title");
+    let returned = fields.iter().map(|f| f.to_uppercase()).collect::<Vec<_>>().join(", ");
+    // The track list always carries every field for identification, so say
+    // plainly which ones are context only.
+    rules.push(format!(
+        "Return ONLY these fields: {returned}. Every other field in the track list (and the filename) is there to help you identify the song — do not return it and do not change it."
+    ));
+    if names_edited {
+        rules.push(format!(
+            "SCRIPTS: Apply this per writing system, to both Artist and Title:\n{}\n   Any other non-Latin script not listed above: keep it exactly as written.",
+            script_rules(transliterate)
+        ));
+        rules.push("For mashups (two songs blended together), keep the mashup creator as the artist and format the title as: \"Song1 N Song2\"".to_string());
+        rules.push("FILENAME FALLBACK: Every track includes a \"filename\" field. When the artist or title is empty, missing, or clearly junk, derive them from the filename — filenames are usually \"Artist - Title\" or \"Artist - Title (Mix)\". Apply all the cleaning rules above to values you take from the filename. If, after using both the metadata AND the filename, you still cannot determine the artist or the title, return an empty string \"\" for that field (do not guess a random value).".to_string());
+    } else {
+        rules.push("IDENTIFYING THE SONG: Use the artist and title, and when they are empty or clearly junk, the \"filename\" field — filenames are usually \"Artist - Title\" or \"Artist - Title (Mix)\". If you cannot tell which song a track is, return an empty string \"\" for every field of that track (do not guess).".to_string());
+    }
+    let numbered = rules
+        .iter()
+        .enumerate()
+        .map(|(i, r)| format!("{}. {r}", i + 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let example = |f: &str| match f {
+        "artist" => "\"artist\": \"cleaned artist\"",
+        "title" => "\"title\": \"cleaned title\"",
+        "year" => "\"year\": \"YYYY\"",
+        "genre" => "\"genre\": \"Genre\"",
+        _ => "\"album\": \"Album name\"",
+    };
+    let members = std::iter::once("\"index\": 1")
+        .chain(fields.iter().map(|f| example(f)))
+        .map(|m| format!("    {m}"))
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let intro = if names_edited {
+        "You will receive a list of audio tracks with messy metadata and must return cleaned versions."
+    } else {
+        "You will receive a list of audio tracks and must return the requested metadata for each one."
+    };
+    format!(
+        "You are a music metadata cleanup expert. {intro}\nRULES:\n{numbered}\nOUTPUT FORMAT: Return ONLY a valid JSON array, no explanation, no markdown, no preamble:\n[\n  {{\n{members}\n  }},\n  ...\n]"
     )
 }
 
 /// Returns the exact prompt `ai_clean_batch` would send for the given
-/// transliteration choices, without needing a track list — used by the
-/// Settings UI's "What does AI Clean do?" viewer.
+/// transliteration choices and fields, without needing a track list — used by
+/// the Settings UI's "What does AI Clean do?" viewer.
 #[tauri::command]
-pub fn ai_preview_prompt(transliterate_scripts: Vec<String>) -> String {
-    build_system_prompt(&transliterate_scripts)
+pub fn ai_preview_prompt(transliterate_scripts: Vec<String>, fields: Option<Vec<String>>) -> String {
+    build_system_prompt(&transliterate_scripts, &clean_fields(fields.as_deref()))
 }
 
 /// The complete prompt — the rules above plus the track list — that
 /// `ai_clean_batch` posts to Ollama.
-pub(crate) fn build_clean_prompt(tracks: &[TrackInput], transliterate: &[String]) -> Result<String, String> {
+pub(crate) fn build_clean_prompt(
+    tracks: &[TrackInput],
+    transliterate: &[String],
+    fields: Option<&[String]>,
+) -> Result<String, String> {
     let track_list = serde_json::to_string_pretty(tracks).map_err(|e| e.to_string())?;
-    let system_prompt = build_system_prompt(transliterate);
+    let system_prompt = build_system_prompt(transliterate, &clean_fields(fields));
     Ok(format!("{system_prompt}\n\nTrack list to clean:\n{track_list}"))
 }
 
@@ -114,8 +192,9 @@ pub(crate) fn build_clean_prompt(tracks: &[TrackInput], transliterate: &[String]
 pub fn ai_clean_prompt(
     tracks: Vec<TrackInput>,
     transliterate_scripts: Vec<String>,
+    fields: Option<Vec<String>>,
 ) -> Result<String, String> {
-    build_clean_prompt(&tracks, &transliterate_scripts)
+    build_clean_prompt(&tracks, &transliterate_scripts, fields.as_deref())
 }
 
 /// Manual mode: parses a response the user pasted back from an outside AI
@@ -186,9 +265,10 @@ pub async fn ai_clean_batch(
     model: String,
     tracks: Vec<TrackInput>,
     transliterate_scripts: Vec<String>,
+    fields: Option<Vec<String>>,
 ) -> Result<Vec<CleanedTrack>, String> {
     let track_count = tracks.len();
-    let prompt = build_clean_prompt(&tracks, &transliterate_scripts)?;
+    let prompt = build_clean_prompt(&tracks, &transliterate_scripts, fields.as_deref())?;
     let body = json!({
         "model": model,
         "prompt": prompt,
@@ -321,5 +401,6 @@ fn track_from_value(v: &Value) -> Option<CleanedTrack> {
         title: text("title"),
         year: text("year"),
         genre: text("genre"),
+        album: text("album"),
     })
 }

@@ -83,6 +83,28 @@ export function tabTitle(source: SessionSource, paths: string[]): string {
   return only ?? "Files";
 }
 
+/**
+ * Splits a tab's files for "Open / Move to new tab": `taken` are the files
+ * whose path is in `paths`, `kept` the rest, both in the tab's own order (not
+ * the order the paths were clicked in). Paths not in the tab are ignored.
+ */
+export function splitOff<File extends { path: string }>(
+  files: File[],
+  paths: string[],
+): { taken: File[]; kept: File[] } {
+  const want = new Set(paths);
+  const taken: File[] = [];
+  const kept: File[] = [];
+  for (const f of files) (want.has(f.path) ? taken : kept).push(f);
+  return { taken, kept };
+}
+
+/** Inserts `tab` right after the tab `afterId` (at the end when it isn't there). */
+export function insertAfter<T extends { id: string }>(tabs: T[], afterId: string, tab: T): T[] {
+  const at = tabs.findIndex((t) => t.id === afterId);
+  return at < 0 ? [...tabs, tab] : [...tabs.slice(0, at + 1), tab, ...tabs.slice(at + 1)];
+}
+
 /** Everything one inactive tab needs to come back exactly as it was left. */
 export interface SessionSnapshot<File, Hist> {
   source: SessionSource;

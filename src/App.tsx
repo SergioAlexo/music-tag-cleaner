@@ -16,7 +16,7 @@ import type { ConvertOptions } from "./components/ConvertDialog";
 import type { UnifyGroup } from "./components/UnifyDialog";
 import { Button, Card, cn } from "./components/ui";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { buildCleanRows, useAI } from "./hooks/useAI";
+import { buildCleanRows, modelFields, useAI, type CleanOptions } from "./hooks/useAI";
 import { useCovers } from "./hooks/useCovers";
 import { useImageInfo } from "./hooks/useImageInfo";
 import { useAnalytics } from "./hooks/useAnalytics";
@@ -58,6 +58,8 @@ import {
   basename,
   FIELD_LABELS,
   formatBytes,
+  normalizeAiCleanFields,
+  type AiCleanField,
   type AudioFile,
   type Capitalization,
   type ClaudeCliInfo,
@@ -491,6 +493,8 @@ export default function App() {
   const [manual, setManual] = useState<{
     paths: string[];
     map: Record<string, TagData>;
+    /** The field set this run was started with (the dropdown can differ from the saved default). */
+    options: CleanOptions;
   } | null>(null);
 
   // FFmpeg-backed conversion (v0.10). `ffmpegInfo` gates the Convert dialog.
@@ -498,6 +502,8 @@ export default function App() {
   const [convertOpen, setConvertOpen] = useState(false);
   const [presetsReq, setPresetsReq] = useState<{ folder?: string; available: boolean } | null>(null);
   const [artworkPaths, setArtworkPaths] = useState<string[] | null>(null);
+  /** Find Art was opened to overwrite existing (junk) covers, not just fill gaps. */
+  const [artworkReplace, setArtworkReplace] = useState(false);
   const [junkArtOpen, setJunkArtOpen] = useState(false);
   /** Paths queued for stem separation; non-null means the dialog is open. */
   const [stemsPaths, setStemsPaths] = useState<string[] | null>(null);
@@ -841,7 +847,7 @@ export default function App() {
    * dialog instead of calling Ollama. Nothing leaves the app on its own — the
    * user pastes the prompt into whichever AI they like.
    */
-  const openManual = async () => {
+  const openManual = async (options: CleanOptions) => {
     const paths = filesApi.selectedPaths;
     setBusy(true);
     try {
@@ -849,7 +855,7 @@ export default function App() {
       errors.forEach((e) => notify(e, "error"));
       const valid = paths.filter((p) => map[p]);
       if (!valid.length) return notify("Could not read tags for the selected files", "error");
-      setManual({ paths: valid, map });
+      setManual({ paths: valid, map, options });
     } catch (e) {
       notify(String(e), "error");
     } finally {
@@ -860,9 +866,9 @@ export default function App() {
   /** Turns the answers pasted into the dialog into the usual preview rows. */
   const applyManualResults = (results: ManualResults) => {
     if (!manual) return;
-    const { paths, map } = manual;
+    const { paths, map, options } = manual;
     setTagsMap(map);
-    const { rows, unresolved: unresolvedPaths } = buildCleanRows(paths, map, results.byIndex);
+    const { rows, unresolved: unresolvedPaths } = buildCleanRows(paths, map, results.byIndex, options);
     setPreviewMode("ai");
     setUnresolved(new Set(unresolvedPaths));
     setPending(rows);
@@ -921,13 +927,25 @@ export default function App() {
     return model;
   };
 
-  const runAIClean = async () => {
+  /**
+   * `only` is the dropdown's one-off field set ("Only Year"); without it the
+   * run uses the set saved in Settings. Callers that pass nothing usable (a
+   * click event, the AI-control bridge) get the saved set.
+   */
+  const runAIClean = async (only?: AiCleanField[]) => {
     const paths = filesApi.selectedPaths;
     if (!paths.length) return notify("No files selected", "info");
 
-    if (settings.aiBackend === "manual") return openManual();
+    const picked = Array.isArray(only) ? normalizeAiCleanFields(only) : [];
+    const fields = picked.length ? picked : settingsRef.current.aiCleanFields;
+    if (!fields.length) return notify("AI Clean has no fields to fill — pick some in Settings → AI Clean", "info");
+    const options: CleanOptions = { fields, fillEmptyOnly: settingsRef.current.aiCleanFillEmptyOnly };
+    // Only the local Album Artist copy was picked: no model (or dialog) needed.
+    const needsModel = modelFields(fields).length > 0;
 
-    const model = await resolveAiModel();
+    if (needsModel && settings.aiBackend === "manual") return openManual(options);
+
+    const model = needsModel ? await resolveAiModel() : "";
     if (model === null) return;
 
     setBusy(true);
@@ -961,6 +979,7 @@ export default function App() {
             total,
             label: `Processing track ${Math.min(done + 1, total)} of ${total}`,
           }),
+        options,
       );
       batchErrors.forEach((e) => notify(`AI batch failed — ${e}`, "error"));
       setTagsMap(map);
@@ -2418,7 +2437,7 @@ This rewrites the ${meta.singular} tag on ${
         capitalization: runCapitalizationOnly,
         characterRules: runCharacterRules,
         removeChars: runRemoveChars,
-        aiClean: runAIClean,
+        aiClean: (fields) => runAIClean(fields as AiCleanField[] | undefined),
         clearFields: runClearFields,
         generateIds,
         rekordboxToTags: runRekordboxToTags,
@@ -2445,7 +2464,10 @@ This rewrites the ${meta.singular} tag on ${
         confirmPresetsApply: (dir, count) =>
           confirm(applyConfirmText(dir, count), { title: "Write presets", kind: "info" }),
         openOrganize,
-        openFindArtwork: (paths) => setArtworkPaths(paths),
+        openFindArtwork: (paths) => {
+          setArtworkReplace(false);
+          setArtworkPaths(paths);
+        },
         openJunkArt: () => setJunkArtOpen(true),
         loadFacet: loadLibraryFacet,
         showCompare: showHistoryCompare,
@@ -2555,7 +2577,11 @@ This rewrites the ${meta.singular} tag on ${
               onPendingChange={setPending}
               onApplyPending={applyPending}
               onCancelPending={() => setPending(null)}
-              onAIClean={withTrack("aiClean", runAIClean)}
+              onAIClean={(fields) => {
+                analytics.track("aiClean");
+                void runAIClean(fields);
+              }}
+              onSaveAiCleanFields={(fields) => void update((prev) => ({ ...prev, aiCleanFields: fields }))}
               onStopAI={ai.stop}
               onCapitalization={withTrack1<Capitalization>("capitalization", runCapitalizationOnly)}
               onCharacterRules={withTrack("characterRules", runCharacterRules)}
@@ -2568,11 +2594,23 @@ This rewrites the ${meta.singular} tag on ${
               onSeparateStems={withTrack("stems", () => void openStems())}
               onConvertFile={withTrack1("convertFile", (f: AudioFile) => openConvert(f))}
               onMoveToCollection={openOrganize}
+              onOpenInNewTab={(paths, move) => {
+                analytics.track(move ? "moveToNewTab" : "openInNewTab");
+                void sessionTabs.openSelectionInNewTab(paths, move).then((ok) => {
+                  if (ok) {
+                    const n = paths.length;
+                    notify(`${move ? "Moved" : "Opened"} ${n} track${n === 1 ? "" : "s"} in a new tab`, "success");
+                  }
+                });
+              }}
               onFetchLyrics={withTrack1("fetchLyrics", runFetchLyrics)}
               onDetectLanguage={withTrack1("detectLanguage", runDetectLanguage)}
               onStandardizeArt={withTrack("standardizeArt", standardizeArtwork)}
               onSquareArt={withTrack("squareArt", squareArtwork)}
-              onFindArtwork={withTrack1("findArtwork", (paths: string[]) => setArtworkPaths(paths))}
+              onFindArtwork={withTrack1("findArtwork", (paths: string[]) => {
+                setArtworkReplace(false);
+                setArtworkPaths(paths);
+              })}
               onJunkArt={withTrack("junkArt", () => setJunkArtOpen(true))}
               onStandardizeContainers={withTrack("standardizeContainers", standardizeContainers)}
               onRename={withTrack("renameToStandard", renameToStandard)}
@@ -2613,6 +2651,14 @@ This rewrites the ${meta.singular} tag on ${
               tags={libraryTags}
               notify={notify}
               onDelete={deleteDuplicateFiles}
+              skipped={settings.duplicateSkipped}
+              onSkippedChange={(fn) =>
+                void update((prev) => ({ ...prev, duplicateSkipped: fn(prev.duplicateSkipped ?? []) }))
+              }
+              alternatePolicy={settings.duplicateAlternatePolicy}
+              onAlternatePolicyChange={(policy) =>
+                void update((prev) => ({ ...prev, duplicateAlternatePolicy: policy }))
+              }
               onShowInLibrary={(path) => {
                 setPage("library");
                 requestFocusPath(path);
@@ -2748,6 +2794,7 @@ This rewrites the ${meta.singular} tag on ${
           paths={manual.paths}
           tags={manual.map}
           transliterateScripts={settings.transliterateScripts}
+          fields={modelFields(manual.options.fields ?? settings.aiCleanFields)}
           chunkSize={settings.manualChunkSize}
           onChunkSizeChange={(size) => void update((prev) => ({ ...prev, manualChunkSize: size }))}
           onCancel={() => setManual(null)}
@@ -2762,6 +2809,7 @@ This rewrites the ${meta.singular} tag on ${
             durations={Object.fromEntries(filesApi.files.map((f) => [f.path, f.durationSecs]))}
             artworkMaxDim={settings.artworkMaxDim}
             artworkJpegQuality={settings.artworkJpegQuality}
+            onlyMissing={!artworkReplace}
             onApplied={artworkApplied}
             onClose={() => setArtworkPaths(null)}
           />
@@ -2771,7 +2819,10 @@ This rewrites the ${meta.singular} tag on ${
         <Suspense fallback={null}>
           <JunkArtDialog
             onRemoveArt={removeArtForPaths}
-            onFindArt={(paths) => setArtworkPaths(paths)}
+            onFindArt={(paths, replace) => {
+              setArtworkReplace(replace);
+              setArtworkPaths(paths);
+            }}
             notify={notify}
             onClose={() => setJunkArtOpen(false)}
           />

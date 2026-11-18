@@ -27,9 +27,21 @@ const USER_AGENT: &str = concat!(
 /// MusicBrainz asks for at most one request per second per client.
 const MB_INTERVAL: Duration = Duration::from_millis(1100);
 const CACHE_TTL_SECS: i64 = 30 * 24 * 3600;
-/// Hamming distance (of 64) under which two covers count as the same image.
-/// Re-encoding the same picture as JPEG moves a dHash by 0-3 bits.
+/// Hamming distance (of 64) under which two covers are *candidates* for being
+/// the same image. Re-encoding the same picture as JPEG moves a dHash by 0-3
+/// bits. On its own this is far too loose: on the owner's library (mostly
+/// 16:9 video thumbnails, dark background, bright centre) completely
+/// different covers land within 6 bits of each other and even on the exact
+/// same hash, so every candidate is confirmed with `fine_print` before it
+/// counts.
 pub const SAME_IMAGE_DISTANCE: u32 = 6;
+/// Side of the RGB thumbnail that confirms a dHash match.
+const FINE_SIDE: u32 = 12;
+/// Mean absolute difference (0-255 per channel) under which two fine prints
+/// are the same picture. A JPEG re-encode or rescale of one picture stays in
+/// single digits; the colliding-but-different covers seen in a real library
+/// are several times this.
+pub const SAME_IMAGE_FINE_MAD: f32 = 12.0;
 /// A cluster is junk-art material when this many tracks by this many
 /// different artists carry what is, visually, one picture.
 const MIN_CLUSTER_TRACKS: usize = 3;
@@ -71,12 +83,24 @@ CREATE TABLE IF NOT EXISTS junk_blocklist (
 );
 ";
 
+/// Columns added after the tables first shipped. `ALTER TABLE` fails with
+/// "duplicate column" once applied, which is ignored on purpose.
+const MIGRATIONS: &[&str] = &[
+    // The confirmation print (see `fine_print`). NULL = not computed yet;
+    // filled at scan time, or lazily for older rows when they are clustered.
+    "ALTER TABLE art_hash ADD COLUMN fine BLOB",
+    "ALTER TABLE junk_blocklist ADD COLUMN fine BLOB",
+];
+
 fn open_store(path: &Path) -> Result<Connection, String> {
     let conn = Connection::open(path).map_err(|e| e.to_string())?;
     let _ = conn.pragma_update(None, "journal_mode", "WAL");
     let _ = conn.pragma_update(None, "synchronous", "NORMAL");
     let _ = conn.busy_timeout(Duration::from_secs(10));
     conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+    for m in MIGRATIONS {
+        let _ = conn.execute(m, []);
+    }
     // Expired responses are never read again (`cache_get` filters them), so
     // they only took up space: drop them the first time the store is opened
     // in a session.
@@ -569,6 +593,36 @@ pub fn hamming(a: u64, b: u64) -> u32 {
     (a ^ b).count_ones()
 }
 
+/// A 12×12 RGB thumbnail of the whole picture: 432 bytes that, unlike the
+/// 64-bit dHash, keep colour and layout. Used to confirm that two covers the
+/// dHash calls alike really are one picture.
+pub fn fine_print(img: &image::DynamicImage) -> Vec<u8> {
+    img.resize_exact(FINE_SIDE, FINE_SIDE, image::imageops::FilterType::Triangle).to_rgb8().into_raw()
+}
+
+/// Mean absolute difference between two fine prints (0-255); `f32::MAX` when
+/// they can't be compared.
+pub fn fine_distance(a: &[u8], b: &[u8]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return f32::MAX;
+    }
+    let sum: u64 = a.iter().zip(b).map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as u64).sum();
+    sum as f32 / a.len() as f32
+}
+
+/// Both prints present and close enough to be one picture.
+pub fn same_picture(a: Option<&[u8]>, b: Option<&[u8]>) -> bool {
+    matches!((a, b), (Some(a), Some(b)) if fine_distance(a, b) <= SAME_IMAGE_FINE_MAD)
+}
+
+/// The fine print of a file's embedded cover, read from disk.
+fn fine_of_file(path: &str) -> Option<Vec<u8>> {
+    let tagged = lofty::read_from_path(path).ok()?;
+    let tag = crate::commands::files::main_tag(&tagged)?;
+    let img = image::load_from_memory(tag.pictures().first()?.data()).ok()?;
+    Some(fine_print(&img))
+}
+
 /// Starter heuristic for art that is probably a placeholder or logo, as a
 /// 0..1 score plus human-readable reasons. Deliberately simple: tiny images,
 /// near-solid fills, and images with only a handful of distinct colours.
@@ -618,12 +672,18 @@ pub struct HashItem {
     pub hash: u64,
     pub artist: String,
     pub album: String,
+    /// `fine_print` of the cover, when known. An item without one never
+    /// joins a cluster: there is no way to confirm the dHash match.
+    pub fine: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Cluster {
-    /// The most common exact hash in the cluster.
+    /// The dHash of the cluster's first member.
     pub representative: u64,
+    /// The first member's fine print; every member is within
+    /// `SAME_IMAGE_FINE_MAD` of it.
+    pub fine: Vec<u8>,
     pub members: Vec<usize>,
     pub artists: usize,
     pub albums: usize,
@@ -633,12 +693,24 @@ fn norm_key(s: &str) -> String {
     s.trim().to_lowercase()
 }
 
-/// Groups images whose hashes are within `max_dist` of a cluster's
-/// representative, then keeps clusters spanning at least `min_artists`
-/// distinct artists over at least `min_tracks` tracks: one album's own cover
-/// repeated down its tracklist is not junk, the same picture on unrelated
-/// artists is. Sorted by size, biggest first.
-pub fn cluster_hashes(items: &[HashItem], max_dist: u32, min_tracks: usize, min_artists: usize) -> Vec<Cluster> {
+/// The first-billed artist of a credit, lowercased: everything before the
+/// first "feat.", "ft.", ",", "&", ";", "/", " x " or " vs ".
+pub fn lead_artist(credit: &str) -> String {
+    let lower = credit.trim().to_lowercase();
+    let mut end = lower.len();
+    for sep in [" feat", " ft.", " ft ", " featuring", ",", "&", ";", "/", " x ", " vs ", " vs. ", " with "] {
+        if let Some(pos) = lower.find(sep) {
+            if pos > 0 {
+                end = end.min(pos);
+            }
+        }
+    }
+    lower[..end].trim().to_string()
+}
+
+/// Coarse dHash grouping: images whose hashes are within `max_dist` of a
+/// group's anchor. Only a candidate list; see `cluster_hashes`.
+fn coarse_groups(items: &[HashItem], max_dist: u32) -> Vec<(u64, Vec<usize>)> {
     let mut by_hash: HashMap<u64, Vec<usize>> = HashMap::new();
     for (i, it) in items.iter().enumerate() {
         by_hash.entry(it.hash).or_default().push(i);
@@ -655,21 +727,63 @@ pub fn cluster_hashes(items: &[HashItem], max_dist: u32, min_tracks: usize, min_
             None => clusters.push((hash, members)),
         }
     }
+    clusters
+}
 
-    let mut out: Vec<Cluster> = clusters
+/// Whether a group is big and varied enough to be worth showing.
+fn passes(items: &[HashItem], members: &[usize], min_tracks: usize, min_artists: usize) -> bool {
+    members.len() >= min_tracks
+        && members.iter().map(|&i| norm_key(&items[i].artist)).collect::<HashSet<_>>().len() >= min_artists
+}
+
+/// Items in coarse groups that could become a cluster and still lack a fine
+/// print: what `artwork_clusters` has to read from disk before clustering.
+pub fn needs_fine(items: &[HashItem], max_dist: u32, min_tracks: usize, min_artists: usize) -> Vec<usize> {
+    coarse_groups(items, max_dist)
         .into_iter()
-        .filter_map(|(rep, members)| {
-            if members.len() < min_tracks {
-                return None;
+        .filter(|(_, m)| passes(items, m, min_tracks, min_artists))
+        .flat_map(|(_, m)| m)
+        .filter(|&i| items[i].fine.is_none())
+        .collect()
+}
+
+/// Groups covers that are one picture, then keeps clusters spanning at least
+/// `min_artists` distinct artists over at least `min_tracks` tracks: one
+/// album's own cover repeated down its tracklist is not junk, the same
+/// picture on unrelated artists is. Sorted by size, biggest first.
+///
+/// Two stages: a dHash within `max_dist` makes covers candidates, and the
+/// fine prints decide. Each coarse group is split greedily into sub-groups
+/// whose members are all close to the sub-group's first member.
+pub fn cluster_hashes(items: &[HashItem], max_dist: u32, min_tracks: usize, min_artists: usize) -> Vec<Cluster> {
+    let mut out: Vec<Cluster> = Vec::new();
+    for (_, members) in coarse_groups(items, max_dist) {
+        if !passes(items, &members, min_tracks, min_artists) {
+            continue;
+        }
+        let mut subs: Vec<Vec<usize>> = Vec::new();
+        for i in members {
+            let Some(fine) = items[i].fine.as_deref() else { continue };
+            match subs.iter_mut().find(|g| same_picture(items[g[0]].fine.as_deref(), Some(fine))) {
+                Some(g) => g.push(i),
+                None => subs.push(vec![i]),
             }
-            let artists: HashSet<String> = members.iter().map(|&i| norm_key(&items[i].artist)).collect();
-            if artists.len() < min_artists {
-                return None;
+        }
+        for g in subs {
+            if !passes(items, &g, min_tracks, min_artists) {
+                continue;
             }
-            let albums: HashSet<String> = members.iter().map(|&i| norm_key(&items[i].album)).collect();
-            Some(Cluster { representative: rep, members, artists: artists.len(), albums: albums.len() })
-        })
-        .collect();
+            let artists = g.iter().map(|&i| norm_key(&items[i].artist)).collect::<HashSet<_>>().len();
+            let albums = g.iter().map(|&i| norm_key(&items[i].album)).collect::<HashSet<_>>().len();
+            out.push(Cluster {
+                representative: items[g[0]].hash,
+                fine: items[g[0]].fine.clone().unwrap_or_default(),
+                members: g,
+                artists,
+                albums,
+            });
+        }
+    }
     out.sort_by(|a, b| b.members.len().cmp(&a.members.len()).then(a.representative.cmp(&b.representative)));
     out
 }
@@ -685,6 +799,7 @@ struct Hashed {
 
 struct HashRow {
     hash: u64,
+    fine: Vec<u8>,
     width: u32,
     height: u32,
     suspicion: f32,
@@ -711,6 +826,7 @@ fn hash_file(path: &str) -> Result<Option<HashRow>, String> {
     let (score, reasons) = suspicion(&img, w, h);
     Ok(Some(HashRow {
         hash: dhash(&img),
+        fine: fine_print(&img),
         width: w,
         height: h,
         suspicion: score,
@@ -804,9 +920,9 @@ fn scan_blocking(app: &AppHandle, store: &Path, paths: Vec<String>, prune: bool)
                 Ok(Some(r)) => {
                     summary.hashed += 1;
                     tx.execute(
-                        "INSERT OR REPLACE INTO art_hash (path, mtime, size, hash, width, height, suspicion, reasons, artist, album, title)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                        params![h.path, h.mtime, h.size, r.hash as i64, r.width, r.height, r.suspicion, r.reasons.join("; "), r.artist, r.album, r.title],
+                        "INSERT OR REPLACE INTO art_hash (path, mtime, size, hash, width, height, suspicion, reasons, artist, album, title, fine)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                        params![h.path, h.mtime, h.size, r.hash as i64, r.width, r.height, r.suspicion, r.reasons.join("; "), r.artist, r.album, r.title, r.fine],
                     )
                     .map_err(|e| e.to_string())?;
                 }
@@ -846,7 +962,7 @@ struct StoredRow {
 
 fn load_rows(conn: &Connection) -> Result<Vec<StoredRow>, String> {
     let mut stmt = conn
-        .prepare("SELECT path, hash, width, height, suspicion, reasons, artist, album, title FROM art_hash")
+        .prepare("SELECT path, hash, width, height, suspicion, reasons, artist, album, title, fine FROM art_hash")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
@@ -856,6 +972,7 @@ fn load_rows(conn: &Connection) -> Result<Vec<StoredRow>, String> {
                     hash: r.get::<_, i64>(1)? as u64,
                     artist: r.get(6)?,
                     album: r.get(7)?,
+                    fine: r.get::<_, Option<Vec<u8>>>(9)?,
                 },
                 width: r.get(2)?,
                 height: r.get(3)?,
@@ -868,12 +985,72 @@ fn load_rows(conn: &Connection) -> Result<Vec<StoredRow>, String> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-fn load_blocklist(conn: &Connection) -> Result<Vec<(u64, String)>, String> {
-    let mut stmt = conn.prepare("SELECT hash, label FROM junk_blocklist").map_err(|e| e.to_string())?;
+struct Blocked {
+    hash: u64,
+    label: String,
+    /// None = an entry from before fine prints that could not be confirmed;
+    /// it matches nothing rather than flag the wrong covers.
+    fine: Option<Vec<u8>>,
+}
+
+impl Blocked {
+    fn matches(&self, hash: u64, fine: Option<&[u8]>) -> bool {
+        hamming(self.hash, hash) <= SAME_IMAGE_DISTANCE && same_picture(self.fine.as_deref(), fine)
+    }
+}
+
+fn load_blocklist(conn: &Connection) -> Result<Vec<Blocked>, String> {
+    let mut stmt = conn.prepare("SELECT hash, label, fine FROM junk_blocklist").map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?)))
+        .query_map([], |r| {
+            Ok(Blocked {
+                hash: r.get::<_, i64>(0)? as u64,
+                label: r.get::<_, String>(1)?,
+                fine: r.get::<_, Option<Vec<u8>>>(2)?,
+            })
+        })
         .map_err(|e| e.to_string())?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Reads the fine print of `rows[i]` for each index that lacks one, in
+/// parallel, and stores it so the next call doesn't read the file again.
+fn fill_fine(conn: &mut Connection, rows: &mut [StoredRow], idx: &[usize]) {
+    let todo: Vec<usize> = idx.iter().copied().filter(|&i| rows[i].item.fine.is_none()).collect();
+    if todo.is_empty() {
+        return;
+    }
+    let paths: Vec<String> = todo.iter().map(|&i| rows[i].item.path.clone()).collect();
+    let prints: Vec<Option<Vec<u8>>> = par_map(&paths, |p| fine_of_file(p), |_| None);
+    if let Ok(tx) = conn.transaction() {
+        for (p, f) in paths.iter().zip(&prints) {
+            if let Some(f) = f {
+                let _ = tx.execute("UPDATE art_hash SET fine = ?1 WHERE path = ?2", params![f, p]);
+            }
+        }
+        let _ = tx.commit();
+    }
+    for (&i, f) in todo.iter().zip(prints) {
+        rows[i].item.fine = f;
+    }
+}
+
+/// Gives blocklist entries from before fine prints existed a print, but only
+/// when every cover carrying that exact dHash really is one picture: exact
+/// dHash collisions between different covers are common, and a guessed
+/// print would flag the wrong ones. An unconfirmable entry stays print-less
+/// and so matches nothing.
+fn backfill_blocklist(conn: &mut Connection, rows: &mut [StoredRow], blocklist: &mut [Blocked]) {
+    for b in blocklist.iter_mut().filter(|b| b.fine.is_none()) {
+        let exact: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].item.hash == b.hash).collect();
+        fill_fine(conn, rows, &exact);
+        let prints: Vec<&[u8]> = exact.iter().filter_map(|&i| rows[i].item.fine.as_deref()).collect();
+        let Some(first) = prints.first() else { continue };
+        if prints.len() == exact.len() && prints.iter().all(|p| fine_distance(first, p) <= SAME_IMAGE_FINE_MAD) {
+            b.fine = Some(first.to_vec());
+            let _ = conn.execute("UPDATE junk_blocklist SET fine = ?1 WHERE hash = ?2", params![first, b.hash as i64]);
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -888,11 +1065,21 @@ pub struct SampleTrack {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClusterDto {
+    /// Unique per cluster. Different pictures can share a dHash, so `hash`
+    /// alone is not a key.
+    pub id: String,
     /// Hex, because a u64 does not survive a trip through a JS number.
     pub hash: String,
     pub count: usize,
     pub artists: usize,
     pub albums: usize,
+    /// Members with a blank album tag. `albums` counts "" as an album, so the
+    /// UI needs this to tell "one shared album" from "no album at all".
+    pub empty_albums: usize,
+    /// Distinct *lead* artists ("A feat. B" and "A & C" both count as A).
+    /// `artists` counts every spelling of the credit, so one act's own cover
+    /// across its collaborations looked like a picture shared by many artists.
+    pub lead_artists: usize,
     pub blocked: bool,
     pub label: String,
     pub thumbnail: Option<String>,
@@ -916,15 +1103,20 @@ fn thumbnail_of(path: &str, size: u32) -> Option<String> {
 pub async fn artwork_clusters(app: AppHandle) -> Result<Vec<ClusterDto>, String> {
     let store = store_path(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let conn = open_store(&store)?;
-        let rows = load_rows(&conn)?;
-        let blocklist = load_blocklist(&conn)?;
+        let mut conn = open_store(&store)?;
+        let mut rows = load_rows(&conn)?;
+        let mut blocklist = load_blocklist(&conn)?;
+        backfill_blocklist(&mut conn, &mut rows, &mut blocklist);
+        // Rows scanned before fine prints existed: read just the candidates.
+        let items: Vec<HashItem> = rows.iter().map(|r| r.item.clone()).collect();
+        let todo = needs_fine(&items, SAME_IMAGE_DISTANCE, MIN_CLUSTER_TRACKS, MIN_CLUSTER_ARTISTS);
+        fill_fine(&mut conn, &mut rows, &todo);
         let items: Vec<HashItem> = rows.iter().map(|r| r.item.clone()).collect();
         let clusters = cluster_hashes(&items, SAME_IMAGE_DISTANCE, MIN_CLUSTER_TRACKS, MIN_CLUSTER_ARTISTS);
         Ok(clusters
             .into_iter()
             .map(|c| {
-                let blocked = blocklist.iter().find(|(h, _)| hamming(*h, c.representative) <= SAME_IMAGE_DISTANCE);
+                let blocked = blocklist.iter().find(|b| b.matches(c.representative, Some(&c.fine)));
                 let samples: Vec<SampleTrack> = c
                     .members
                     .iter()
@@ -937,12 +1129,20 @@ pub async fn artwork_clusters(app: AppHandle) -> Result<Vec<ClusterDto>, String>
                     })
                     .collect();
                 ClusterDto {
+                    id: format!("{:016x}:{}", c.representative, rows[c.members[0]].item.path),
                     hash: format!("{:016x}", c.representative),
                     count: c.members.len(),
                     artists: c.artists,
                     albums: c.albums,
+                    empty_albums: c.members.iter().filter(|&&i| rows[i].item.album.trim().is_empty()).count(),
+                    lead_artists: c
+                        .members
+                        .iter()
+                        .map(|&i| lead_artist(&rows[i].item.artist))
+                        .collect::<HashSet<String>>()
+                        .len(),
                     blocked: blocked.is_some(),
-                    label: blocked.map(|(_, l)| l.clone()).unwrap_or_default(),
+                    label: blocked.map(|b| b.label.clone()).unwrap_or_default(),
                     thumbnail: c.members.first().and_then(|&i| thumbnail_of(&rows[i].item.path, 96)),
                     samples,
                     paths: c.members.iter().map(|&i| rows[i].item.path.clone()).collect(),
@@ -954,22 +1154,39 @@ pub async fn artwork_clusters(app: AppHandle) -> Result<Vec<ClusterDto>, String>
     .map_err(|_| "Reading clusters failed unexpectedly".to_string())?
 }
 
-/// Marks (or unmarks) a cluster's picture as junk art.
+/// Marks (or unmarks) a cluster's picture as junk art. `path` is a file that
+/// carries the picture; its fine print is what later matches are confirmed
+/// against (the dHash alone matches unrelated covers).
 #[tauri::command]
-pub async fn artwork_blocklist_set(app: AppHandle, hash: String, label: String, blocked: bool) -> Result<(), String> {
+pub async fn artwork_blocklist_set(
+    app: AppHandle,
+    hash: String,
+    label: String,
+    blocked: bool,
+    path: Option<String>,
+) -> Result<(), String> {
     let h = u64::from_str_radix(&hash, 16).map_err(|_| "Bad hash".to_string())?;
+    let fine = match path {
+        Some(p) => crate::commands::files::run_blocking(move || Ok::<_, String>(fine_of_file(&p))).await?,
+        None => None,
+    };
     let conn = open_store(&store_path(&app)?)?;
     if blocked {
+        let fine = fine.ok_or_else(|| "Could not read that picture to remember it".to_string())?;
         conn.execute(
-            "INSERT OR REPLACE INTO junk_blocklist (hash, label, added_at) VALUES (?1, ?2, ?3)",
-            params![h as i64, label, now_secs()],
+            "INSERT OR REPLACE INTO junk_blocklist (hash, label, added_at, fine) VALUES (?1, ?2, ?3, ?4)",
+            params![h as i64, label, now_secs(), fine],
         )
     } else {
-        // Unmark everything within the match radius, not only the exact hash.
+        // Unmark every entry for this picture, not only the exact hash; an
+        // entry with no print can't be told apart, so an exact hash removes it.
         let near: Vec<i64> = load_blocklist(&conn)?
             .into_iter()
-            .filter(|(b, _)| hamming(*b, h) <= SAME_IMAGE_DISTANCE)
-            .map(|(b, _)| b as i64)
+            .filter(|b| match (&b.fine, &fine) {
+                (Some(_), Some(f)) => b.matches(h, Some(f)),
+                _ => b.hash == h,
+            })
+            .map(|b| b.hash as i64)
             .collect();
         let mut n = 0;
         for b in near {
@@ -1000,14 +1217,20 @@ pub struct FlaggedTrack {
 pub async fn artwork_flagged(app: AppHandle) -> Result<Vec<FlaggedTrack>, String> {
     let store = store_path(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let conn = open_store(&store)?;
-        let rows = load_rows(&conn)?;
-        let blocklist = load_blocklist(&conn)?;
+        let mut conn = open_store(&store)?;
+        let mut rows = load_rows(&conn)?;
+        let mut blocklist = load_blocklist(&conn)?;
+        backfill_blocklist(&mut conn, &mut rows, &mut blocklist);
+        // Only covers near a blocked hash need a print to be confirmed.
+        let near: Vec<usize> = (0..rows.len())
+            .filter(|&i| blocklist.iter().any(|b| hamming(b.hash, rows[i].item.hash) <= SAME_IMAGE_DISTANCE))
+            .collect();
+        fill_fine(&mut conn, &mut rows, &near);
         let mut out = Vec::new();
         for r in rows {
-            let hit = blocklist.iter().find(|(h, _)| hamming(*h, r.item.hash) <= SAME_IMAGE_DISTANCE);
-            let (reason, blocked) = match hit {
-                Some((_, label)) => (
+            let hit = blocklist.iter().find(|b| b.matches(r.item.hash, r.item.fine.as_deref()));
+            let (reason, blocked) = match hit.map(|b| &b.label) {
+                Some(label) => (
                     if label.is_empty() { "Marked as junk art".to_string() } else { format!("Marked as junk art: {label}") },
                     true,
                 ),
@@ -1036,6 +1259,17 @@ pub async fn artwork_flagged(app: AppHandle) -> Result<Vec<FlaggedTrack>, String
 mod tests {
     use super::*;
     use image::{DynamicImage, Rgb, RgbImage};
+
+    #[test]
+    fn lead_artist_drops_guests_and_keeps_plain_names() {
+        assert_eq!(lead_artist("Max Barskih feat. Someone"), "max barskih");
+        assert_eq!(lead_artist("Max Barskih & Other"), "max barskih");
+        assert_eq!(lead_artist("Kazka, Alekseev"), "kazka");
+        assert_eq!(lead_artist("Daft Punk"), "daft punk");
+        assert_eq!(lead_artist("Макс Корж ft. X"), "макс корж");
+        // A leading separator must not produce an empty lead.
+        assert_eq!(lead_artist("& Friends"), "& friends");
+    }
 
     /// A picture with real structure (gradient, a disc, bars) so its hash isn't degenerate.
     fn sample(seed: u32, size: u32) -> DynamicImage {
@@ -1086,8 +1320,68 @@ mod tests {
         assert!(hamming(a, b) > SAME_IMAGE_DISTANCE, "distinct images collided");
     }
 
+    /// A fine print standing for "picture number `n`": far from every other n.
+    fn print(n: u8) -> Option<Vec<u8>> {
+        Some(vec![n.wrapping_mul(60); (FINE_SIDE * FINE_SIDE * 3) as usize])
+    }
+
     fn item(path: &str, hash: u64, artist: &str, album: &str) -> HashItem {
-        HashItem { path: path.into(), hash, artist: artist.into(), album: album.into() }
+        item_p(path, hash, artist, album, 1)
+    }
+
+    fn item_p(path: &str, hash: u64, artist: &str, album: &str, pic: u8) -> HashItem {
+        let fine = if path.starts_with('a') { print(2) } else { print(pic) };
+        HashItem { path: path.into(), hash, artist: artist.into(), album: album.into(), fine }
+    }
+
+    #[test]
+    fn fine_print_tells_reencodes_from_different_pictures() {
+        let img = sample(1, 600);
+        let f = fine_print(&img);
+        for q in [95, 75, 50] {
+            let d = fine_distance(&f, &fine_print(&jpeg_roundtrip(&img, q)));
+            assert!(d <= SAME_IMAGE_FINE_MAD, "q{q} moved the print by {d}");
+        }
+        let small = jpeg_roundtrip(&img.resize_exact(300, 300, image::imageops::FilterType::Lanczos3), 60);
+        assert!(fine_distance(&f, &fine_print(&small)) <= SAME_IMAGE_FINE_MAD);
+        for other in [2, 3, 4] {
+            let d = fine_distance(&f, &fine_print(&sample(other, 600)));
+            assert!(d > SAME_IMAGE_FINE_MAD, "picture {other} was taken for picture 1 ({d})");
+        }
+    }
+
+    #[test]
+    fn same_dhash_different_picture_is_not_a_cluster() {
+        // The owner's library: unrelated covers on one exact dHash.
+        let h = 0xF0F0_F0F0_0F0F_0F0Fu64;
+        let items: Vec<HashItem> = (0..6u8).map(|i| item_p(&format!("x{i}"), h, &format!("art{i}"), "", i)).collect();
+        assert!(cluster_hashes(&items, SAME_IMAGE_DISTANCE, 3, 3).is_empty());
+        // Without a print an item can't be confirmed, so it never joins.
+        let mut blind = items.clone();
+        for it in &mut blind {
+            it.fine = None;
+        }
+        assert!(cluster_hashes(&blind, SAME_IMAGE_DISTANCE, 3, 3).is_empty());
+        assert_eq!(needs_fine(&blind, SAME_IMAGE_DISTANCE, 3, 3).len(), 6);
+    }
+
+    #[test]
+    fn a_coarse_group_splits_into_the_pictures_it_holds() {
+        let h = 0x0F0F_0F0F_F0F0_F0F0u64;
+        let mut items: Vec<HashItem> = (0..4u8).map(|i| item_p(&format!("p{i}"), h, &format!("a{i}x"), "", 1)).collect();
+        items.extend((0..3u8).map(|i| item_p(&format!("q{i}"), h ^ 1, &format!("b{i}"), "", 3)));
+        let c = cluster_hashes(&items, SAME_IMAGE_DISTANCE, 3, 3);
+        assert_eq!(c.iter().map(|c| c.members.len()).collect::<Vec<_>>(), vec![4, 3]);
+    }
+
+    #[test]
+    fn blocklist_entry_needs_the_same_picture() {
+        let b = Blocked { hash: 42, label: String::new(), fine: print(1) };
+        assert!(b.matches(42 ^ 0b11, print(1).as_deref()));
+        assert!(!b.matches(42, print(3).as_deref()), "a colliding but different cover was flagged");
+        assert!(!b.matches(42, None));
+        let legacy = Blocked { hash: 42, label: String::new(), fine: None };
+        assert!(!legacy.matches(42, print(1).as_deref()));
     }
 
     #[test]
@@ -1099,9 +1393,9 @@ mod tests {
             item("3", logo ^ 0b1_0000, "C", "z"),
             item("4", logo, "D", "w"),
             // one album's own cover, one artist: not junk
-            item("5", 0x1234_5678_9ABC_DEF0, "Solo", "LP"),
-            item("6", 0x1234_5678_9ABC_DEF0, "Solo", "LP"),
-            item("7", 0x1234_5678_9ABC_DEF0, "Solo", "LP"),
+            item_p("5", 0x1234_5678_9ABC_DEF0, "Solo", "LP", 4),
+            item_p("6", 0x1234_5678_9ABC_DEF0, "Solo", "LP", 4),
+            item_p("7", 0x1234_5678_9ABC_DEF0, "Solo", "LP", 4),
             // far-off hash with a single track
             item("8", !logo, "E", "q"),
         ];
@@ -1198,7 +1492,7 @@ mod tests {
             .zip(rows)
             .filter_map(|(p, r)| {
                 let r = r?;
-                Some((HashItem { path: p.clone(), hash: r.hash, artist: r.artist, album: r.album }, r.suspicion, r.reasons.join("; "), r.width))
+                Some((HashItem { path: p.clone(), hash: r.hash, artist: r.artist, album: r.album, fine: Some(r.fine) }, r.suspicion, r.reasons.join("; "), r.width))
             })
             .collect();
         println!("tracks with art: {} / hashed {}", paths.len(), items.len());

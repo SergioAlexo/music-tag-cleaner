@@ -90,11 +90,72 @@ function kindIsSingle(c: ArtworkCandidate): boolean {
   return /^(single|ep)$/i.test(c.kind) || (c.trackCount != null && c.trackCount <= 3);
 }
 
+/** Words that mark a bracket or " - suffix" as a version tag rather than part of the song's name. */
+const VERSION_WORDS =
+  /\b(mix|edit|edited|version|remix|remaster(ed)?|extended|radio|original|club|dub|instrumental|acapella|clean|dirty|explicit|intro|outro|bootleg|rework|vip|djcity|quick ?hit|short|transition|hype)\b/i;
+
+/**
+ * The song's name without version tags: "Titanium (Extended Mix)" and
+ * "Titanium - Radio Edit" are both "Titanium". DJ-pool files nearly always
+ * carry such a tag while MusicBrainz / iTunes / Deezer list the plain title,
+ * so matching on the full string alone left most of a DJ library below the
+ * auto-pick threshold. Falls back to the input when stripping leaves nothing.
+ */
+export function baseTitle(title: string): string {
+  let t = title.replace(/[([]([^)\]]*)[)\]]/g, (m, inner: string) => (VERSION_WORDS.test(inner) ? " " : m));
+  t = t.replace(/\s+-\s+([^-]*)$/, (m, tail: string) =>
+    VERSION_WORDS.test(tail) && tail.trim().split(/\s+/).length <= 4 ? "" : m,
+  );
+  t = t.replace(/\s+/g, " ").trim();
+  return t || title.trim();
+}
+
+/** The first-billed artist of a credit: "A & B", "A, B", "A x B", "A vs B" → "A". */
+export function primaryArtist(artist: string): string {
+  return artist.split(/\s*(?:,|&|\bx\b|\bvs\.?\b)\s*/i)[0]?.trim() || artist.trim();
+}
+
+/**
+ * Builds a search from a file name when the tags have no title: "Artist -
+ * Title (Mix).mp3" → artist + title. A name with no " - " is taken as the
+ * title alone. Leading track numbers ("01 - ", "03. ") are dropped.
+ */
+export function queryFromFilename(path: string): TrackQuery | null {
+  const stem = (path.split(/[\\/]/).pop() ?? path)
+    .replace(/\.[^.]+$/, "")
+    .replace(/_/g, " ")
+    .replace(/^\s*\d{1,3}\s*[-.)]\s+/, "")
+    .trim();
+  if (!stem) return null;
+  const at = stem.indexOf(" - ");
+  if (at < 0) return { artist: "", title: stem };
+  const artist = stem.slice(0, at).trim();
+  const title = stem.slice(at + 3).trim();
+  return title ? { artist, title } : null;
+}
+
 export function scoreCandidate(q: TrackQuery, c: ArtworkCandidate): RankedCandidate {
-  const t = similarity(q.title, c.trackTitle);
-  const a = Math.max(similarity(q.artist, c.trackArtist), similarity(q.artist, c.releaseArtist));
+  const full = similarity(q.title, c.trackTitle);
+  // Same song under a different version tag (the file is an Extended Mix, the
+  // store lists the plain single): nearly as good as an exact title for the
+  // purpose of finding the *cover*, so score the stripped titles a hair lower.
+  const viaBase = similarity(baseTitle(q.title), baseTitle(c.trackTitle)) - 0.04;
+  const versionDiffers = viaBase > full;
+  const t = Math.max(full, viaBase);
+  const artistFull = Math.max(similarity(q.artist, c.trackArtist), similarity(q.artist, c.releaseArtist));
+  // "A & B" on the file against "A" in the store (or the reverse) is the
+  // same act with a guest billed differently.
+  const artistPrimary = q.artist
+    ? Math.max(
+        similarity(primaryArtist(q.artist), primaryArtist(c.trackArtist)),
+        similarity(primaryArtist(q.artist), primaryArtist(c.releaseArtist)),
+      ) - 0.06
+    : 0;
+  const a = Math.max(artistFull, artistPrimary);
   let confidence = 0.5 * t + 0.5 * a;
-  if (q.durationSecs && c.durationMs) {
+  // A different edit is a different length by definition, so the duration
+  // check only applies when the titles matched as written.
+  if (q.durationSecs && c.durationMs && !versionDiffers) {
     const diff = Math.abs(q.durationSecs - c.durationMs / 1000);
     if (diff <= 2) confidence += 0.05;
     else if (diff > 5) confidence -= 0.3;

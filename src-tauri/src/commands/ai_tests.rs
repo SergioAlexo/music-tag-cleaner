@@ -12,12 +12,13 @@ fn track(index: u32, artist: &str, title: &str) -> TrackInput {
         title: title.into(),
         year: String::new(),
         genre: String::new(),
+        album: String::new(),
     }
 }
 
 #[test]
 fn clean_prompt_carries_the_rules_and_the_track_list() {
-    let prompt = ai_clean_prompt(vec![track(1, "Bad Bunny", "Tití Me Preguntó")], vec![]).unwrap();
+    let prompt = ai_clean_prompt(vec![track(1, "Bad Bunny", "Tití Me Preguntó")], vec![], None).unwrap();
     assert!(prompt.contains("music metadata cleanup expert"));
     assert!(prompt.contains("Track list to clean:"));
     assert!(prompt.contains("Tití Me Preguntó"));
@@ -28,7 +29,7 @@ fn clean_prompt_carries_the_rules_and_the_track_list() {
 #[test]
 fn clean_prompt_honours_transliteration_choices() {
     let prompt =
-        ai_clean_prompt(vec![track(1, "Кино", "Группа крови")], vec!["Cyrillic".into()]).unwrap();
+        ai_clean_prompt(vec![track(1, "Кино", "Группа крови")], vec!["Cyrillic".into()], None).unwrap();
     assert!(prompt.contains("Cyrillic: transliterate it phonetically"));
     assert!(prompt.contains("Hebrew: keep it exactly as written"));
 }
@@ -81,4 +82,40 @@ fn keeps_global_indexes_so_batches_land_on_the_right_track() {
 fn rejects_an_answer_with_no_json_in_it() {
     let err = ai_parse_clean_response("I'm sorry, I can't help with that.".into()).unwrap_err();
     assert!(err.contains("Could not parse"));
+}
+
+#[test]
+fn a_year_only_prompt_asks_for_nothing_else() {
+    let prompt =
+        ai_clean_prompt(vec![track(1, "Daft Punk", "One More Time")], vec![], Some(vec!["year".into()])).unwrap();
+    assert!(prompt.contains("YEAR: Return the ORIGINAL release year"));
+    assert!(prompt.contains("Return ONLY these fields: YEAR."));
+    assert!(prompt.contains("\"year\": \"YYYY\""));
+    // No rules or output slots for the fields that were not requested.
+    assert!(!prompt.contains("ARTIST: Keep only"));
+    assert!(!prompt.contains("TITLE: Keep only"));
+    assert!(!prompt.contains("\"genre\": \"Genre\""));
+    assert!(!prompt.contains("SCRIPTS:"));
+    // The track itself is still there to identify the song by.
+    assert!(prompt.contains("One More Time"));
+}
+
+#[test]
+fn no_or_unknown_fields_fall_back_to_the_default_four() {
+    let default = ai_clean_prompt(vec![track(1, "A", "B")], vec![], None).unwrap();
+    let junk = ai_clean_prompt(vec![track(1, "A", "B")], vec![], Some(vec!["albumArtist".into()])).unwrap();
+    assert_eq!(default, junk);
+    assert!(default.contains("Return ONLY these fields: ARTIST, TITLE, YEAR, GENRE."));
+    assert!(!default.contains("ALBUM: Return"));
+}
+
+#[test]
+fn album_is_returned_only_when_asked_for() {
+    let prompt =
+        ai_clean_prompt(vec![track(1, "A", "B")], vec![], Some(vec!["album".into(), "year".into()])).unwrap();
+    assert!(prompt.contains("ALBUM: Return"));
+    assert!(prompt.contains("Return ONLY these fields: YEAR, ALBUM."));
+    let out = ai_parse_clean_response(r#"[{"index":1,"year":"2001","album":"Discovery"}]"#.into()).unwrap();
+    assert_eq!(out[0].album.as_deref(), Some("Discovery"));
+    assert_eq!(out[0].artist, None);
 }

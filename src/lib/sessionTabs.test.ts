@@ -3,6 +3,8 @@ import {
   afterManualAdd,
   closeTab,
   decideGenreClick,
+  insertAfter,
+  splitOff,
   tabTitle,
   type SessionSource,
 } from "./sessionTabs";
@@ -108,5 +110,33 @@ describe("closeTab", () => {
   it("ignores an unknown id", () => {
     const tabs = [t("a")];
     expect(closeTab(tabs, "a", "zzz", fresh).tabs).toBe(tabs);
+  });
+});
+
+describe("splitOff", () => {
+  const files = ["a", "b", "c", "d"].map((path) => ({ path }));
+
+  it("takes the chosen files in the tab's order and keeps the rest", () => {
+    const { taken, kept } = splitOff(files, ["d", "b"]);
+    expect(taken.map((f) => f.path)).toEqual(["b", "d"]);
+    expect(kept.map((f) => f.path)).toEqual(["a", "c"]);
+  });
+
+  it("ignores paths that are not in the tab", () => {
+    expect(splitOff(files, ["zzz"]).taken).toEqual([]);
+    expect(splitOff(files, ["zzz"]).kept).toHaveLength(4);
+  });
+});
+
+describe("insertAfter", () => {
+  const tabs = [{ id: "1" }, { id: "2" }, { id: "3" }];
+
+  it("places the new tab next to the one it came from", () => {
+    expect(insertAfter(tabs, "2", { id: "n" }).map((t) => t.id)).toEqual(["1", "2", "n", "3"]);
+    expect(insertAfter(tabs, "3", { id: "n" }).map((t) => t.id)).toEqual(["1", "2", "3", "n"]);
+  });
+
+  it("appends when the source tab is unknown", () => {
+    expect(insertAfter(tabs, "x", { id: "n" }).map((t) => t.id)).toEqual(["1", "2", "3", "n"]);
   });
 });

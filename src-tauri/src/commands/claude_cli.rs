@@ -645,11 +645,12 @@ pub async fn claude_clean_batch(
     app: AppHandle,
     tracks: Vec<TrackInput>,
     transliterate_scripts: Vec<String>,
+    fields: Option<Vec<String>>,
     model: Option<String>,
     effort: Option<String>,
 ) -> Result<Vec<CleanedTrack>, String> {
     let count = tracks.len();
-    let prompt = ai::build_clean_prompt(&tracks, &transliterate_scripts)?;
+    let prompt = ai::build_clean_prompt(&tracks, &transliterate_scripts, fields.as_deref())?;
     let (text, envelope) = tauri::async_runtime::spawn_blocking(move || {
         let exe = find_claude().ok_or_else(|| {
             "No Claude CLI found — install it, or switch the AI backend in Settings.".to_string()

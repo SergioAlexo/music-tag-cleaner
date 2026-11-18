@@ -16,7 +16,6 @@ import {
   ScanSearch,
   RotateCcw,
   RotateCw,
-  Sparkles,
   SquarePen,
   StopCircle,
   Link2,
@@ -27,6 +26,7 @@ import {
   Layers,
 } from "lucide-react";
 import type {
+  AiCleanField,
   AudioFile,
   Capitalization,
   PendingChange,
@@ -44,6 +44,7 @@ import { shortcutFor } from "../lib/shortcuts";
 import { TrackTable } from "../components/TrackTable";
 import PreviewTable from "../components/PreviewTable";
 import { ClearFieldsMenu } from "../components/ClearFieldsMenu";
+import { AiCleanMenu } from "../components/AiCleanMenu";
 import { CapitalizationMenu } from "../components/CapitalizationMenu";
 import { LibrarySidebar, matchesSidebarFilter, type SidebarFilter } from "../components/LibrarySidebar";
 import { Button } from "../components/ui";
@@ -125,7 +126,9 @@ interface Props {
   onPendingChange: (rows: PendingChange[]) => void;
   onApplyPending: () => void;
   onCancelPending: () => void;
-  onAIClean: () => void;
+  /** Without an argument: the field set saved in Settings. */
+  onAIClean: (fields?: AiCleanField[]) => void;
+  onSaveAiCleanFields: (fields: AiCleanField[]) => void;
   onStopAI: () => void;
   onCapitalization: (mode: Capitalization) => void;
   onCharacterRules: () => void;
@@ -141,6 +144,7 @@ interface Props {
   onSeparateStems: () => void;
   onConvertFile: (file: AudioFile) => void;
   onMoveToCollection?: (paths: string[]) => void;
+  onOpenInNewTab?: (paths: string[], move: boolean) => void;
   onFetchLyrics?: (paths: string[]) => void;
   onDetectLanguage?: (paths: string[]) => void;
   onStandardizeArt: () => void;
@@ -221,6 +225,7 @@ export function LibraryPage({
   onApplyPending,
   onCancelPending,
   onAIClean,
+  onSaveAiCleanFields,
   onStopAI,
   onCapitalization,
   onCharacterRules,
@@ -233,6 +238,7 @@ export function LibraryPage({
   onSeparateStems,
   onConvertFile,
   onMoveToCollection,
+  onOpenInNewTab,
   onFetchLyrics,
   onDetectLanguage,
   onStandardizeArt,
@@ -590,24 +596,16 @@ export function LibraryPage({
               Stop AI
             </Button>
           ) : (
-            <Button
-              variant="violet"
-              onClick={onAIClean}
-              disabled={noSel}
-              title={
-                settings.aiBackend === "manual"
-                  ? "Copy the prompt into any AI (ChatGPT, Claude, Gemini…) and paste its answer back"
-                  : "Clean Artist, Title, Year and Genre with the local Ollama model"
+            <AiCleanMenu
+              fields={settings.aiCleanFields}
+              fillEmptyOnly={settings.aiCleanFillEmptyOnly}
+              backendSuffix={
+                settings.aiBackend === "manual" ? " (manual)" : settings.aiBackend === "claude" ? " (Claude)" : ""
               }
-            >
-              <Sparkles />
-              AI Clean
-              {settings.aiBackend === "manual"
-                ? " (manual)"
-                : settings.aiBackend === "claude"
-                  ? " (Claude)"
-                  : ""}
-            </Button>
+              disabled={noSel}
+              onRun={onAIClean}
+              onSaveDefault={onSaveAiCleanFields}
+            />
           )}
 
           <span className="mx-1 h-6 w-px bg-border" />
@@ -719,7 +717,7 @@ export function LibraryPage({
             size="sm"
             onClick={() => onFindArtwork(filesApi.selectedPaths)}
             disabled={noSel}
-            title="Look up proper cover art (MusicBrainz, iTunes, Deezer) for the selected tracks"
+            title="Look up proper cover art (MusicBrainz, iTunes, Deezer). With several tracks selected it fills only the ones without artwork (or with a junk logo) unless you untick that."
           >
             <ImageIcon />
             Find Art
@@ -833,6 +831,7 @@ export function LibraryPage({
               onConvertFile={onConvertFile}
               onFindArtwork={onFindArtwork}
               onMoveToCollection={onMoveToCollection}
+              onOpenInNewTab={onOpenInNewTab}
               onFetchLyrics={onFetchLyrics}
               onDetectLanguage={onDetectLanguage}
               trackIdFormats={tidFormats}

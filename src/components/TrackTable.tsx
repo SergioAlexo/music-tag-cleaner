@@ -22,6 +22,8 @@ import {
   Mic2,
   Music,
   FolderInput,
+  CopyPlus,
+  ArrowRightFromLine,
   Pause,
   Play,
   Repeat,
@@ -276,6 +278,8 @@ interface Props {
   onFindArtwork?: (paths: string[]) => void;
   /** B4: opens the Move-to-collection preview for these paths. */
   onMoveToCollection?: (paths: string[]) => void;
+  /** Opens a new tab holding these tracks; `move` also takes them out of this one. */
+  onOpenInNewTab?: (paths: string[], move: boolean) => void;
   onFetchLyrics?: (paths: string[]) => void;
   onDetectLanguage?: (paths: string[]) => void;
   /** Track ID → distinct loaded formats, for the "also loaded as" link badge. */
@@ -469,6 +473,7 @@ export function TrackTable({
   onConvertFile,
   onFindArtwork,
   onMoveToCollection,
+  onOpenInNewTab,
   onFetchLyrics,
   onDetectLanguage,
   trackIdFormats,
@@ -2381,6 +2386,21 @@ export function TrackTable({
               onInspect: first && n === 1 ? () => onInspect(first) : undefined,
             }),
           ];
+          if (onOpenInNewTab) {
+            items.push(
+              null,
+              {
+                icon: CopyPlus,
+                label: n > 1 ? `Open ${n} in new tab` : "Open in new tab",
+                run: () => onOpenInNewTab(menu.paths, false),
+              },
+              {
+                icon: ArrowRightFromLine,
+                label: n > 1 ? `Move ${n} to new tab` : "Move to new tab",
+                run: () => onOpenInNewTab(menu.paths, true),
+              },
+            );
+          }
           // Single-file-only extras: a right-click inside a multi-selection
           // only offers actions every shared menu item already supports.
           if (first && n === 1) {
