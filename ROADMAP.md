@@ -2883,6 +2883,34 @@ contract: `PLAN-preset-translator.md` (§2, §10). Built by parallel agents.
   here), and the Presets dialog and plugin have not been run in the app yet.
   No end-to-end conversion has been loaded into Vital by hand.
 
+### 74. Copy / paste artwork, manual artwork search — v0.21.0
+
+**Released as v0.21.0** (also the first release carrying item 73's
+Preset Translator host code, which stays inert without the optional plugin
+and engine).
+
+**What/why.** The owner wanted to take the cover from one track and put it
+on others, and to search for a cover themselves when the tags don't find
+the right one.
+
+**How.**
+- Track table right-click menu: **Copy artwork** (single track) stores the
+  embedded picture's exact bytes as a data URL in an in-app clipboard
+  (`App.tsx` `artClipboard`); **Paste artwork** (one or many tracks) embeds
+  them through `restore_cover_art`, so nothing is re-encoded. Tracks that
+  already carry the identical picture are skipped; the rest land in one
+  undoable history entry. With nothing copied in-app, Paste falls back to an
+  image on the system clipboard (e.g. copied in a browser). The menu label
+  names the file the art came from.
+- Find artwork's single-track / Pick… view gains editable **Artist** and
+  **Title or album** boxes pre-filled from the tags. A typed search queries
+  all three sources, drops the duration filter (a typed search is usually
+  for another release), and shows up to 12 candidates instead of 6. Files
+  with no title tag and no usable file name can now be searched by hand.
+
+**Verification.** `npm run build`, vitest 426, cargo test 282. Not
+click-tested in `tauri dev`.
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —
