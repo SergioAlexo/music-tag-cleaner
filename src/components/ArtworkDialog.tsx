@@ -66,7 +66,7 @@ async function searchSources(q: TrackQuery, all: boolean): Promise<ArtworkCandid
  * a different edit is a different length and MusicBrainz results are
  * filtered by it.
  */
-export async function findArtworkCandidates(q: TrackQuery, all = false): Promise<RankedCandidate[]> {
+export async function findArtworkCandidates(q: TrackQuery, all = false, limit = 6): Promise<RankedCandidate[]> {
   let pool: ArtworkCandidate[] = [];
   let error: unknown = null;
   try {
@@ -84,7 +84,7 @@ export async function findArtworkCandidates(q: TrackQuery, all = false): Promise
     }
   }
   if (!pool.length && error) throw error;
-  return rankCandidates(q, pool).slice(0, 6);
+  return rankCandidates(q, pool).slice(0, limit);
 }
 
 /** The search for one file: its tags, or its file name when it has no title tag. */
@@ -195,6 +195,16 @@ export function ArtworkDialog({
 
   const q = queries?.[single] ?? null;
 
+  /** The editable search boxes in the single-track view, pre-filled from the
+   * tags. Tags are often wrong or carry DJ-pool junk, so the owner can type
+   * their own artist / title (or an album name) and search again. */
+  const [manualArtist, setManualArtist] = useState("");
+  const [manualTitle, setManualTitle] = useState("");
+  useEffect(() => {
+    setManualArtist(q?.artist ?? "");
+    setManualTitle(q?.title ?? "");
+  }, [single, q]);
+
   /** The tracks a bulk run will look up. */
   const targets = useMemo(
     () => paths.filter((p) => !onlyMissing || !hasArt[p] || (replaceJunk && junk.has(p))),
@@ -207,13 +217,16 @@ export function ArtworkDialog({
   const singleRef = useRef(single);
   singleRef.current = single;
 
-  const search = async (all = false) => {
-    if (!q) return;
+  const search = async (all = false, override?: TrackQuery) => {
+    const query = override ?? q;
+    if (!query) return;
     const forPath = single;
     setBusy(true);
     setError(null);
     try {
-      const found = await findArtworkCandidates(q, all);
+      // A hand-typed search shows more results: the owner is browsing, not
+      // trusting the top pick.
+      const found = await findArtworkCandidates(query, all, override ? 12 : 6);
       // The user may have gone back to the list (or on to another row) meanwhile.
       if (live.current && forPath === singleRef.current) setCandidates(found);
     } catch (e) {
@@ -238,6 +251,15 @@ export function ArtworkDialog({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [single, bulk, !!queries]);
+
+  const manualSearch = () => {
+    const title = manualTitle.trim();
+    const artist = manualArtist.trim();
+    if (!title && !artist) return;
+    // The duration only narrows MusicBrainz to this exact edit; a typed search
+    // is usually for a different release, so it's dropped.
+    void search(true, { artist, title: title || artist, album: undefined });
+  };
 
   const choose = async (c: ArtworkCandidate) => {
     setBusy(true);
@@ -374,14 +396,44 @@ export function ArtworkDialog({
                 )}
               </div>
               <div className="min-w-0 flex-1">
+                <form
+                  className="mb-3 flex gap-2"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    manualSearch();
+                  }}
+                >
+                  <input
+                    className="h-8 min-w-0 flex-1 rounded border border-input bg-background px-2 text-sm"
+                    placeholder="Artist"
+                    value={manualArtist}
+                    disabled={!queries}
+                    onChange={(e) => setManualArtist(e.target.value)}
+                  />
+                  <input
+                    className="h-8 min-w-0 flex-[1.4] rounded border border-input bg-background px-2 text-sm"
+                    placeholder="Title or album"
+                    value={manualTitle}
+                    disabled={!queries}
+                    onChange={(e) => setManualTitle(e.target.value)}
+                  />
+                  <Button
+                    type="submit"
+                    size="sm"
+                    disabled={busy || !queries || (!manualArtist.trim() && !manualTitle.trim())}
+                    title="Search MusicBrainz, iTunes and Deezer for what you typed"
+                  >
+                    <Search /> Search
+                  </Button>
+                </form>
                 <p className="mb-1 text-xs text-muted-foreground">
                   {busy && !candidates ? "Searching…" : candidates?.length ? "Pick one to embed" : "Candidates"}
                 </p>
-                {queries && !q && (
-                  <p className="text-sm">This file has no title tag and no usable file name, so there is nothing to search for.</p>
+                {queries && !q && !candidates && (
+                  <p className="text-sm">This file has no title tag and no usable file name — type an artist and title above to search.</p>
                 )}
                 {candidates && candidates.length === 0 && !busy && (
-                  <p className="text-sm text-muted-foreground">Nothing found. Try the other sources, or check the artist and title tags.</p>
+                  <p className="text-sm text-muted-foreground">Nothing found. Try all sources, or change the artist / title above and search again.</p>
                 )}
                 <div className="grid grid-cols-3 gap-3">
                   {candidates?.map((c) => (
@@ -511,7 +563,15 @@ export function ArtworkDialog({
             </Button>
           )}
           {!bulk && (
-            <Button variant="secondary" size="sm" disabled={busy || !q} onClick={() => search(true)}>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={busy || (!q && !manualArtist.trim() && !manualTitle.trim())}
+              onClick={() =>
+                // Once the boxes were edited, "all sources" means for what's typed there.
+                q && manualArtist.trim() === q.artist && manualTitle.trim() === q.title ? search(true) : manualSearch()
+              }
+            >
               <Search /> Try all sources
             </Button>
           )}

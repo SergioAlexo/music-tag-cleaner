@@ -150,6 +150,9 @@ interface Props {
   onStandardizeArt: () => void;
   onSquareArt: () => void;
   onFindArtwork: (paths: string[]) => void;
+  onCopyArtwork: (path: string) => void;
+  onPasteArtwork: (paths: string[]) => void;
+  artClipboardFrom: string | null;
   onJunkArt: () => void;
   /** Moves every selected track's tags into its format's canonical container. */
   onStandardizeContainers: () => void;
@@ -244,6 +247,9 @@ export function LibraryPage({
   onStandardizeArt,
   onSquareArt,
   onFindArtwork,
+  onCopyArtwork,
+  onPasteArtwork,
+  artClipboardFrom,
   onJunkArt,
   onStandardizeContainers,
   onRename,
@@ -830,6 +836,9 @@ export function LibraryPage({
               onRenameGenre={onRenameGenre}
               onConvertFile={onConvertFile}
               onFindArtwork={onFindArtwork}
+              onCopyArtwork={onCopyArtwork}
+              onPasteArtwork={onPasteArtwork}
+              artClipboardFrom={artClipboardFrom}
               onMoveToCollection={onMoveToCollection}
               onOpenInNewTab={onOpenInNewTab}
               onFetchLyrics={onFetchLyrics}

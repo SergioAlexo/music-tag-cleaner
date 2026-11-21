@@ -1756,6 +1756,70 @@ export default function App() {
     }
   };
 
+  /** In-app artwork clipboard: the exact embedded bytes (as a data URL) of
+   * the last "Copy artwork", so pasting re-embeds them without re-encoding. */
+  const [artClipboard, setArtClipboard] = useState<{ dataUrl: string; from: string } | null>(null);
+
+  const copyArtwork = async (path: string) => {
+    try {
+      const dataUrl = await invoke<string | null>("read_cover_art", { path });
+      if (!dataUrl) {
+        notify(`${basename(path)} has no artwork to copy`, "info");
+        return;
+      }
+      setArtClipboard({ dataUrl, from: basename(path) });
+      notify(`Copied artwork from ${basename(path)}`, "success");
+    } catch (e) {
+      notify(String(e), "error");
+    }
+  };
+
+  /** Reads an image off the system clipboard (e.g. copied in a browser) as a
+   * data URL — the fallback when nothing was copied inside the app. */
+  const systemClipboardImage = async (): Promise<string | null> => {
+    try {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const type = item.types.find((t) => t.startsWith("image/"));
+        if (!type) continue;
+        const blob = await item.getType(type);
+        return await new Promise<string>((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result));
+          r.onerror = () => reject(r.error);
+          r.readAsDataURL(blob);
+        });
+      }
+    } catch {
+      /* clipboard empty, denied, or not an image */
+    }
+    return null;
+  };
+
+  const pasteArtwork = async (paths: string[]) => {
+    const dataUrl = artClipboard?.dataUrl ?? (await systemClipboardImage());
+    if (!dataUrl) {
+      notify("Nothing to paste — right-click a track with artwork and choose Copy artwork first", "info");
+      return;
+    }
+    const changes: HistoryChange[] = [];
+    for (const path of paths) {
+      try {
+        const before = (await invoke<string | null>("read_cover_art", { path })) ?? "";
+        if (before === dataUrl) continue; // already has this exact art
+        await invoke("restore_cover_art", { path, dataUrl });
+        changes.push({ path, field: "__coverArt", before, after: dataUrl });
+      } catch (e) {
+        notify(`${basename(path)}: ${e}`, "error");
+      }
+    }
+    if (changes.length) {
+      artworkApplied(changes, `Paste artwork (${changes.length})`);
+    } else {
+      notify("Those tracks already have this artwork", "info");
+    }
+  };
+
   /** Bulk "Remove art" for the junk-art dialog: one undoable history entry. */
   const removeArtForPaths = async (paths: string[]) => {
     const changes: HistoryChange[] = [];
@@ -2611,6 +2675,9 @@ This rewrites the ${meta.singular} tag on ${
                 setArtworkReplace(false);
                 setArtworkPaths(paths);
               })}
+              onCopyArtwork={withTrack1("copyArtwork", (path: string) => void copyArtwork(path))}
+              onPasteArtwork={withTrack1("pasteArtwork", (paths: string[]) => void pasteArtwork(paths))}
+              artClipboardFrom={artClipboard?.from ?? null}
               onJunkArt={withTrack("junkArt", () => setJunkArtOpen(true))}
               onStandardizeContainers={withTrack("standardizeContainers", standardizeContainers)}
               onRename={withTrack("renameToStandard", renameToStandard)}

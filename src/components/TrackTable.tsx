@@ -9,6 +9,8 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  ClipboardPaste,
+  Copy,
   ExternalLink,
   Filter,
   Headphones,
@@ -276,6 +278,12 @@ interface Props {
   /** Open the Convert dialog for one right-clicked file. */
   onConvertFile?: (file: AudioFile) => void;
   onFindArtwork?: (paths: string[]) => void;
+  /** Copies one track's embedded artwork to the in-app artwork clipboard. */
+  onCopyArtwork?: (path: string) => void;
+  /** Embeds the copied artwork (or a system-clipboard image) into these tracks. */
+  onPasteArtwork?: (paths: string[]) => void;
+  /** File name the artwork clipboard was copied from, or null when empty. */
+  artClipboardFrom?: string | null;
   /** B4: opens the Move-to-collection preview for these paths. */
   onMoveToCollection?: (paths: string[]) => void;
   /** Opens a new tab holding these tracks; `move` also takes them out of this one. */
@@ -472,6 +480,9 @@ export function TrackTable({
   onRenameFile,
   onConvertFile,
   onFindArtwork,
+  onCopyArtwork,
+  onPasteArtwork,
+  artClipboardFrom,
   onMoveToCollection,
   onOpenInNewTab,
   onFetchLyrics,
@@ -2418,6 +2429,19 @@ export function TrackTable({
               icon: ImagePlus,
               label: n > 1 ? `Find artwork for ${n}…` : "Find artwork…",
               run: () => onFindArtwork(menu.paths),
+            });
+          }
+          if (onCopyArtwork && first && n === 1) {
+            if (!onFindArtwork) items.push(null);
+            items.push({ icon: Copy, label: "Copy artwork", run: () => onCopyArtwork(first.path) });
+          }
+          if (onPasteArtwork) {
+            if (!onFindArtwork && !(onCopyArtwork && n === 1)) items.push(null);
+            const into = n > 1 ? ` into ${n}` : "";
+            items.push({
+              icon: ClipboardPaste,
+              label: artClipboardFrom ? `Paste artwork${into} (from ${artClipboardFrom})` : `Paste artwork${into}`,
+              run: () => onPasteArtwork(menu.paths),
             });
           }
           if (onFetchLyrics || onDetectLanguage) {
