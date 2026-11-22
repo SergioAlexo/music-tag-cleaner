@@ -130,6 +130,8 @@ fn year_rule_asks_for_the_original_song_not_this_version() {
     assert!(prompt.contains("Alphaville"));
     assert!(prompt.contains("OLDEST song in the mashup"));
     assert!(prompt.contains("only borrows a short sample"));
+    // An empty year gets a best estimate instead of being left blank.
+    assert!(prompt.contains("If the existing year is EMPTY, give your best estimate"));
 }
 
 /// Writes the exact prompt for a few remixes/covers to $MTC_PROMPT_OUT, for
@@ -148,6 +150,15 @@ fn print_year_prompt() {
         t(5, "Joel Corry, MNEK", "Head & Heart", "2020"),
         t(6, "Topic, A7S", "Breaking Me", "2019"),
     ];
-    let prompt = ai_clean_prompt(tracks, vec![], Some(vec!["year".into()])).unwrap();
+    // Optional: real tracks ($MTC_TRACKS_IN, a JSON TrackInput array) and the
+    // field set ($MTC_FIELDS, comma-separated) instead of the samples above.
+    let tracks = match std::env::var("MTC_TRACKS_IN") {
+        Ok(p) => serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap(),
+        Err(_) => tracks,
+    };
+    let fields: Vec<String> = std::env::var("MTC_FIELDS")
+        .map(|f| f.split(',').map(str::to_string).collect())
+        .unwrap_or_else(|_| vec!["year".into()]);
+    let prompt = ai_clean_prompt(tracks, vec![], Some(fields)).unwrap();
     std::fs::write(std::env::var("MTC_PROMPT_OUT").unwrap(), prompt).unwrap();
 }

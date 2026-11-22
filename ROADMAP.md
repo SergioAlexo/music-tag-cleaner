@@ -3035,6 +3035,28 @@ written in an earlier session and committed as f22bbd4.
 
 **Verification.** Four new vitest cases in `ytMatch.test.ts`; full suite 441.
 
+### 79. AI Clean fills empty years with a best estimate — v0.23.2
+
+**Released as v0.23.2.**
+
+**What/why.** The owner noticed AI Clean left empty years empty. The year
+rule ended "if you are not certain…, leave the existing year unchanged", and
+for an empty year "unchanged" means "": the model skipped every song it was
+not sure of. The frontend was fine (an empty `before` with a 4-digit
+`after` is a change).
+
+**How.** `YEAR_RULE` now splits the case: a filled-in year is still only
+changed when the model is confident; an EMPTY year gets a best estimate
+whenever the song can be identified at all, "" only when it can't.
+
+**Verification.** 20 random tracks from the owner's library with no year,
+default field set, Claude CLI Sonnet at low effort (the owner's Clean task):
+old rule filled 11/20, old rule at medium effort 13/20, new rule at low
+effort 17/20. Some extra years are guesses (Wellboy "Гуси" → 2019, likely
+2022); every change is still reviewed in the preview. `ai_tests.rs` asserts
+the new wording; `print_year_prompt` gained `MTC_TRACKS_IN` / `MTC_FIELDS`
+for running real tracks.
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —

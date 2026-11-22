@@ -90,12 +90,19 @@ const TITLE_RULE: &str = r#"TITLE: Keep only the clean song name. Strip ALL of t
 // crowd know it?), not when this particular remix or cover came out. The old
 // wording ("original release year") was read as "this release's year", so a
 // new remix of an 80s song came back as the remix's year.
+//
+// Empty years: "if not certain, leave the existing year unchanged" made the
+// model return "" for any song it wasn't sure of, so empty years stayed
+// empty (9 of 20 of the owner's real empty-year tracks on Sonnet/low).
+// For an empty year a best estimate is asked for instead (17 of 20); the
+// person still reviews every change in the preview.
 const YEAR_RULE: &str = r#"YEAR: Return the year the ORIGINAL SONG was first released — the song itself, not this particular version of it. The year must tell a DJ how old the song is.
    - Remixes, edits, extended/club/radio mixes, bootlegs, VIP mixes, remasters, re-releases, compilations, streaming uploads: return the year the original song came out, NOT the year of the remix or re-release.
    - Covers, re-sings and re-recordings by another artist, and new tracks built around an older song's recognizable melody, chorus or lyrics (interpolations): return the year the ORIGINAL song came out. Example: David Guetta "Forever Young" is built on Alphaville's "Forever Young" → 1984.
    - Mashups of several songs: return the year of the OLDEST song in the mashup.
    - A brand-new song that only borrows a short sample is its own song: return its own year.
-   Use your music knowledge. If you are not certain which song it is based on or when that came out, leave the existing year unchanged."#;
+   Use your music knowledge. If the existing year is filled in and you are not certain which song it is based on or when that came out, leave it unchanged.
+   If the existing year is EMPTY, give your best estimate whenever you can identify the song at all (a likely year beats no year); return "" only if you cannot tell which song it is."#;
 
 const GENRE_RULE: &str = "GENRE: Normalize to a standard single genre. Use common terms like: Pop, Rock, Hip-Hop, R&B, Reggaeton, House, Techno, Trance, Electronic, Dance, Folk, Country, Jazz, Classical, Metal, Punk, Soul, Funk, Latin, Reggae, Indie, Alternative. Do not use subgenres unless they are very widely recognized.";
 
