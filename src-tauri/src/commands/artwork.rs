@@ -1255,6 +1255,60 @@ pub async fn artwork_flagged(app: AppHandle) -> Result<Vec<FlaggedTrack>, String
     .map_err(|_| "Reading flagged tracks failed unexpectedly".to_string())?
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtGroupEntry {
+    pub path: String,
+    /// Same value for every track carrying one picture.
+    pub group: String,
+    /// How many of the given tracks carry that picture (1 = unique cover).
+    pub size: usize,
+}
+
+/// One entry per item: tracks whose covers are one picture share a `group`.
+/// Unlike Junk Art's clusters there is no minimum artist count: the "Same
+/// art" column shows every repeat (an album's own cover included) and leaves
+/// the judging to the person. The same two-step match applies, so dark 16:9
+/// thumbnails that merely collide on dHash stay apart.
+pub fn group_entries(items: &[HashItem]) -> Vec<ArtGroupEntry> {
+    let mut out = Vec::with_capacity(items.len());
+    let mut grouped = vec![false; items.len()];
+    for c in cluster_hashes(items, SAME_IMAGE_DISTANCE, 2, 1) {
+        let id = format!("{:016x}:{}", c.representative, items[c.members[0]].path);
+        for &i in &c.members {
+            grouped[i] = true;
+            out.push(ArtGroupEntry { path: items[i].path.clone(), group: id.clone(), size: c.members.len() });
+        }
+    }
+    for (_, it) in items.iter().enumerate().filter(|(i, _)| !grouped[*i]) {
+        out.push(ArtGroupEntry { path: it.path.clone(), group: format!("solo:{}", it.path), size: 1 });
+    }
+    out
+}
+
+/// Groups the given tracks (the loaded session) by the look of their embedded
+/// cover, for the track table's "Same art" column. Hashes any track not yet
+/// scanned or changed since (incremental, like `artwork_scan`), so it works
+/// on files outside the indexed library too. Tracks without art are left out.
+#[tauri::command]
+pub async fn artwork_groups(app: AppHandle, paths: Vec<String>) -> Result<Vec<ArtGroupEntry>, String> {
+    let store = store_path(&app)?;
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        scan_blocking(&app2, &store, paths.clone(), false)?;
+        let mut conn = open_store(&store)?;
+        let wanted: HashSet<&String> = paths.iter().collect();
+        let mut rows: Vec<StoredRow> = load_rows(&conn)?.into_iter().filter(|r| wanted.contains(&r.item.path)).collect();
+        let items: Vec<HashItem> = rows.iter().map(|r| r.item.clone()).collect();
+        let todo = needs_fine(&items, SAME_IMAGE_DISTANCE, 2, 1);
+        fill_fine(&mut conn, &mut rows, &todo);
+        let items: Vec<HashItem> = rows.iter().map(|r| r.item.clone()).collect();
+        Ok(group_entries(&items))
+    })
+    .await
+    .map_err(|_| "Grouping artwork failed unexpectedly".to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1363,6 +1417,54 @@ mod tests {
         }
         assert!(cluster_hashes(&blind, SAME_IMAGE_DISTANCE, 3, 3).is_empty());
         assert_eq!(needs_fine(&blind, SAME_IMAGE_DISTANCE, 3, 3).len(), 6);
+    }
+
+    #[test]
+    fn same_art_groups_any_repeat_and_keeps_collisions_apart() {
+        let h = 0x0F0F_0F0F_F0F0_F0F0u64;
+        // One album's own cover on 3 tracks by one artist: Junk Art ignores
+        // it, the Same art column must still group it.
+        let mut items: Vec<HashItem> = (0..3u8).map(|i| item_p(&format!("q{i}"), h, "one artist", "lp", 3)).collect();
+        // Two tracks that collide on dHash with it but are another picture.
+        items.extend((0..2u8).map(|i| item_p(&format!("r{i}"), h, &format!("x{i}"), "", 4)));
+        // A unique cover.
+        items.push(item_p("s0", !h, "solo", "", 5));
+        let e = group_entries(&items);
+        assert_eq!(e.len(), 6);
+        let size = |p: &str| e.iter().find(|x| x.path == p).unwrap().size;
+        let group = |p: &str| e.iter().find(|x| x.path == p).unwrap().group.clone();
+        assert_eq!((size("q0"), size("r0"), size("s0")), (3, 2, 1));
+        assert_eq!(group("q0"), group("q2"));
+        assert_ne!(group("q0"), group("r0"), "a dHash collision was grouped as one picture");
+        assert_unique_group(&group("s0"), &[group("q0"), group("r0")]);
+    }
+
+    fn assert_unique_group(g: &str, others: &[String]) {
+        assert!(others.iter().all(|o| o != g));
+    }
+
+    /// Groups every cover in a copy of a real artwork.sqlite ($MTC_ART_DB) the
+    /// way the Same art column does, and prints the biggest groups. The copy
+    /// gets fine prints written into it, so never point this at the live store.
+    #[test]
+    #[ignore]
+    fn same_art_on_a_real_store() {
+        let db = std::env::var("MTC_ART_DB").unwrap();
+        let mut conn = open_store(Path::new(&db)).unwrap();
+        let mut rows = load_rows(&conn).unwrap();
+        let items: Vec<HashItem> = rows.iter().map(|r| r.item.clone()).collect();
+        let todo = needs_fine(&items, SAME_IMAGE_DISTANCE, 2, 1);
+        fill_fine(&mut conn, &mut rows, &todo);
+        let items: Vec<HashItem> = rows.iter().map(|r| r.item.clone()).collect();
+        let e = group_entries(&items);
+        let mut sizes: HashMap<String, usize> = HashMap::new();
+        for x in e.iter().filter(|x| x.size > 1) {
+            sizes.insert(x.group.clone(), x.size);
+        }
+        let mut v: Vec<usize> = sizes.values().copied().collect();
+        v.sort_unstable_by(|a, b| b.cmp(a));
+        println!("tracks {} | repeated pictures {} | tracks sharing a cover {} | biggest {:?}",
+            e.len(), v.len(), v.iter().sum::<usize>(), &v[..v.len().min(12)]);
     }
 
     #[test]

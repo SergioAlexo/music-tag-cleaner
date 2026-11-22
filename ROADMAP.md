@@ -2983,6 +2983,33 @@ came back right: Guetta "Forever Young" 1984, Daft Punk "One More Time"
 Lost Frequencies "Are You With Me" 2012, and two new songs unchanged. Small
 local Ollama models know less music history and may miss more covers.
 
+### 77. "Same art" column: sort tracks by the look of their cover — v0.23.0
+
+**Released as v0.23.0.**
+
+**What/why.** The owner wanted to see duplicate artworks together (DJcity
+logos included) to remove them; Junk Art "doesn't really work" for them.
+Why it didn't: Junk Art only scans the indexed library (`Music\Collection`)
+and needs a picture on 3+ different artists, and nothing in that library or
+its tags mentions DJcity, so the pool-logo tracks are elsewhere.
+
+**How.** New `artwork_groups(paths)` command (`commands/artwork.rs`): hashes
+the given tracks incrementally (same `scan_blocking` as Junk Art, so files
+outside the library work), then `group_entries` runs the existing two-step
+match (`cluster_hashes` with min 2 tracks / 1 artist: dHash candidates,
+confirmed by the 12×12 fine print) so dark 16:9 thumbnails that only collide
+on dHash stay apart. `useArtGroups` (App.tsx, only while the column is shown,
+debounced, regrouped after every artwork edit). TrackTable column "Same art"
+(`artGroup`) shows "×N" and sorts each picture's tracks together, biggest
+groups first, unique covers next, no art last (`artGroupSortKey`).
+
+**Verification.** Rust unit test (album cover grouped, dHash collision kept
+apart), vitest for the sort order, and the ignored `same_art_on_a_real_store`
+test on a copy of the owner's artwork.sqlite: 3,985 covers → 148 repeated
+pictures over 359 tracks (matches an independent Python check); the first run
+reads fine prints for ~1,200 candidates in ~17 s, later runs reuse them.
+Not click-tested in the app.
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —

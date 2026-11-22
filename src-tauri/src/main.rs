@@ -292,6 +292,7 @@ fn main() {
             commands::artwork::artwork_apply,
             commands::artwork::artwork_scan,
             commands::artwork::artwork_clusters,
+            commands::artwork::artwork_groups,
             commands::artwork::artwork_blocklist_set,
             commands::artwork::artwork_flagged,
             commands::organize::organize_preview,

@@ -62,6 +62,7 @@ import { dominantFamily, fieldHeaderLabel, rawNameTooltip } from "../lib/rawFiel
 import { Combobox } from "./Combobox";
 import { LANGUAGE_OPTIONS, languageFromOption, languageName } from "../lib/language";
 import { Stars } from "./Stars";
+import { artGroupSortKey, type ArtGroup } from "../hooks/useArtGroups";
 import { Button, cn } from "./ui";
 
 export interface ColumnDef {
@@ -72,7 +73,7 @@ export interface ColumnDef {
   value: (file: AudioFile, tags?: TagData) => string;
   align?: "right" | "center";
   /** Rendered with a custom cell (not text/editable). */
-  custom?: "preview" | "rating" | "imageInfo";
+  custom?: "preview" | "rating" | "imageInfo" | "artGroup";
   /** Ad-hoc raw-tag column from the "All Tags" view — not draggable/resizable/persisted. */
   dynamic?: boolean;
   /** The raw allFields/key_name() key this dynamic column edits — unset for curated columns. */
@@ -149,6 +150,9 @@ export const ALL_COLUMNS: ColumnDef[] = [
   { id: "format", label: "Format", width: 72, value: (f) => f.format.toUpperCase() },
   { id: "size", label: "Size", width: 84, value: (f) => formatBytes(f.size), align: "right" },
   { id: "imageInfo", label: "Artwork", width: 150, value: () => "", custom: "imageInfo" },
+  // How many loaded tracks carry this exact cover; sorting by it puts each
+  // repeated picture's tracks together, biggest groups first.
+  { id: "artGroup", label: "Same art", width: 90, value: () => "", custom: "artGroup", align: "right" },
 ];
 
 /**
@@ -247,6 +251,8 @@ interface Props {
   tags: Record<string, TagData>;
   covers: Record<string, string | null>;
   imageInfo: Record<string, ImgInfo | null>;
+  /** "Same art" column: loaded tracks grouped by the look of their cover. */
+  artGroups?: Record<string, ArtGroup>;
   onFetchImageInfo: (path: string) => void;
   onSetCoverArt: (file: AudioFile) => void;
   onRemoveCoverArt: (file: AudioFile) => void;
@@ -454,6 +460,7 @@ export function TrackTable({
   tags,
   covers,
   imageInfo,
+  artGroups = {},
   onFetchImageInfo,
   onSetCoverArt,
   onRemoveCoverArt,
@@ -1007,6 +1014,7 @@ export function TrackTable({
       if (col.id === "size") return f.size;
       if (col.id === "preview") return f.durationSecs ?? -1;
       if (col.id === "imageInfo") return imageInfo[f.path]?.sizeBytes ?? 0;
+      if (col.id === "artGroup") return artGroupSortKey(artGroups[f.path]);
       if (col.id === "year" || col.id === "trackNumber" || col.id === "discNumber") {
         const n = parseInt(col.value(f, t), 10);
         return Number.isNaN(n) ? -Infinity : n;
@@ -1032,7 +1040,7 @@ export function TrackTable({
       return sortDir === "asc" ? cmp : -cmp;
     });
     return keyed.map((x) => x.f);
-  }, [filteredRows, sortCol, sortDir, columnById, tags, imageInfo]);
+  }, [filteredRows, sortCol, sortDir, columnById, tags, imageInfo, artGroups]);
 
   // Current display rows, for the window keydown handler (which is bound once).
   const rowsRef = useRef<AudioFile[]>(rows);
@@ -2101,6 +2109,28 @@ export function TrackTable({
                             title={formatImageInfo(imageInfo[f.path])}
                           >
                             {formatImageInfo(imageInfo[f.path])}
+                          </td>
+                        );
+                      }
+                      if (c.custom === "artGroup") {
+                        const g = artGroups[f.path];
+                        return (
+                          <td
+                            key={c.id}
+                            className={cn("px-3 text-right tabular-nums", rh.py)}
+                            title={
+                              !g
+                                ? "No cover art (or not grouped yet)"
+                                : g.size > 1
+                                  ? `${g.size} loaded tracks share this cover — sort by this column to see them together`
+                                  : "Unique cover"
+                            }
+                          >
+                            {g && g.size > 1 && (
+                              <span className="rounded bg-amber-500/15 px-1.5 text-xs font-medium text-amber-600 dark:text-amber-400">
+                                ×{g.size}
+                              </span>
+                            )}
                           </td>
                         );
                       }

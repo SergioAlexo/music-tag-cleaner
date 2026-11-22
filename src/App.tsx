@@ -19,6 +19,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { buildCleanRows, modelFields, useAI, type CleanOptions } from "./hooks/useAI";
 import { useCovers } from "./hooks/useCovers";
 import { useImageInfo } from "./hooks/useImageInfo";
+import { useArtGroups } from "./hooks/useArtGroups";
 import { useAnalytics } from "./hooks/useAnalytics";
 import { useFiles, type NotifyOpts } from "./hooks/useFiles";
 import { useHistory, type HistoryChange } from "./hooks/useHistory";
@@ -204,6 +205,7 @@ export default function App() {
   const ai = useAI();
   const { covers, invalidate: invalidateCovers } = useCovers(filesApi.files);
   const imageInfoApi = useImageInfo(filesApi.files, settings.visibleColumns.includes("imageInfo"));
+  const artGroupsApi = useArtGroups(filesApi.files, settings.visibleColumns.includes("artGroup"));
   const analytics = useAnalytics();
   const libraryIndex = useLibraryIndex(notify);
 
@@ -1746,6 +1748,7 @@ export default function App() {
       const after = await invoke<string | null>("read_cover_art", { path: file.path });
       invalidateCovers([file.path]);
       imageInfoApi.invalidate([file.path]);
+      artGroupsApi.refresh();
       pushHistory({
         label: "Set artwork",
         changes: [{ path: file.path, field: "__coverArt", before: before ?? "", after: after ?? "" }],
@@ -1836,6 +1839,7 @@ export default function App() {
     if (changes.length) {
       invalidateCovers(changes.map((c) => c.path));
       imageInfoApi.invalidate(changes.map((c) => c.path));
+      artGroupsApi.refresh();
       pushHistory({ label: `Remove artwork (${changes.length})`, changes });
     }
     notify(
@@ -1847,6 +1851,7 @@ export default function App() {
   const artworkApplied = (changes: HistoryChange[], label: string) => {
     invalidateCovers(changes.map((c) => c.path));
     imageInfoApi.invalidate(changes.map((c) => c.path));
+    artGroupsApi.refresh();
     pushHistory({ label, changes });
     notify(`Artwork updated on ${changes.length} track${changes.length === 1 ? "" : "s"}`, "success");
   };
@@ -1858,6 +1863,7 @@ export default function App() {
       await invoke("remove_cover_art", { path: file.path });
       invalidateCovers([file.path]);
       imageInfoApi.invalidate([file.path]);
+      artGroupsApi.refresh();
       pushHistory({
         label: "Remove artwork",
         changes: [{ path: file.path, field: "__coverArt", before, after: "" }],
@@ -1906,6 +1912,7 @@ export default function App() {
       if (changes.length) {
         invalidateCovers(changes.map((c) => c.path));
         imageInfoApi.invalidate(changes.map((c) => c.path));
+        artGroupsApi.refresh();
         pushHistory({ label: `Standardize artwork (${changes.length})`, changes });
       }
       notify(
@@ -1959,6 +1966,7 @@ export default function App() {
       if (changes.length) {
         invalidateCovers(changes.map((c) => c.path));
         imageInfoApi.invalidate(changes.map((c) => c.path));
+        artGroupsApi.refresh();
         pushHistory({ label: `Square artwork (${changes.length})`, changes });
       }
       notify(
@@ -2698,6 +2706,7 @@ This rewrites the ${meta.singular} tag on ${
               }}
               onRenameFile={renameSingleFile}
               imageInfo={imageInfoApi.info}
+              artGroups={artGroupsApi.groups}
               onFetchImageInfo={imageInfoApi.fetchOne}
               onSetCoverArt={withTrack1("setCoverArt", setCoverArt)}
               onRemoveCoverArt={withTrack1("removeCoverArt", removeCoverArt)}

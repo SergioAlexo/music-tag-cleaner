@@ -40,6 +40,7 @@ import type {
 import type { Notify } from "../hooks/useFiles";
 import { KEPT_FIELD_KEYS } from "../types";
 import type { ImageInfo as ImgInfo } from "../hooks/useImageInfo";
+import type { ArtGroup } from "../hooks/useArtGroups";
 import type { RekordboxInfo } from "../hooks/useRekordbox";
 import { buildTrackGroups, trackIdFormats } from "../lib/trackGroups";
 import { shortcutFor } from "../lib/shortcuts";
@@ -195,6 +196,7 @@ interface Props {
   shortcuts: Record<string, string>;
   onTrack: (name: string) => void;
   imageInfo: Record<string, ImgInfo | null>;
+  artGroups: Record<string, ArtGroup>;
   onFetchImageInfo: (path: string) => void;
   onSetCoverArt: (file: AudioFile) => void;
   onRemoveCoverArt: (file: AudioFile) => void;
@@ -284,6 +286,7 @@ export function LibraryPage({
   shortcuts,
   onTrack,
   imageInfo,
+  artGroups,
   onFetchImageInfo,
   onSetCoverArt,
   onRemoveCoverArt,
@@ -927,6 +930,7 @@ export function LibraryPage({
               tags={libraryTags}
               covers={covers}
               imageInfo={imageInfo}
+              artGroups={artGroups}
               onFetchImageInfo={onFetchImageInfo}
               onSetCoverArt={onSetCoverArt}
               onRemoveCoverArt={onRemoveCoverArt}
