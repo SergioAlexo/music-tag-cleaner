@@ -41,6 +41,22 @@ const NOISE_PATTERNS: RegExp[] = [
   /\[\s*4k\s*\]/gi,
 ];
 
+/**
+ * Drops featured-artist credits from a title — "(feat. Ciscaux & Wassup
+ * Rocker)", "[ft. X]", a trailing "feat. X" — for the *title* comparison
+ * only. YouTube puts every guest in the title while a library file is
+ * usually tagged just "Dance", so the guests' names alone dragged a correct
+ * match (1nonly "DANCE! (feat. Ciscaux & Wassup Rocker)" vs "Dance") down to
+ * 81%, under the auto-accept bar. Guests are an artist-side fact anyway.
+ */
+export function stripFeaturing(title: string): string {
+  return title
+    .replace(/[([]\s*(?:feat|ft|featuring|with)\b\.?[^)\]]*[)\]]/gi, " ")
+    .replace(/\s(?:feat|ft|featuring)\b\.?\s.*$/i, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function stripTitleNoise(title: string): string {
   let cleaned = title;
   for (const re of NOISE_PATTERNS) cleaned = cleaned.replace(re, " ");
@@ -432,7 +448,7 @@ export function buildIdentity(file: AudioFile, tag: TagData | undefined): TrackI
     title,
     durationSecs: file.durationSecs,
     texts,
-    titleP: prepare(title),
+    titleP: prepare(stripFeaturing(title) || title),
     artistP: prepare(artist),
     version,
   };
@@ -478,7 +494,7 @@ export function buildWanted(entry: PlaylistEntry): WantedEntry {
   // tagged the plain "Artist / Title" way, even though the split result is
   // never shown or treated as a confirmed artist — see the module doc.
   const split = splitArtistTitle(entry.title);
-  const matchTitle = split.title;
+  const matchTitle = stripFeaturing(split.title) || split.title;
   return {
     artist,
     title,
@@ -537,7 +553,39 @@ function applyDuration(score: number, delta: number | null): number {
   if (delta <= 3) return Math.min(1, score + DURATION_BONUS);
   if (delta <= 10) return score;
   if (delta <= 25) return score * 0.93;
-  return Math.min(score, 0.5) * 0.9;
+  // A big gap used to cap every candidate at 0.45 — below the "worth asking"
+  // bar — however exactly the title and artist agreed. In a DJ library the
+  // copy you own is routinely a different length from the video: a radio
+  // edit (I Gotta Feeling, 4:07 vs the 4:50 video), a 2-minute quick-hitter
+  // remix. Those must still be offered to confirm; they just can never
+  // auto-accept (1.0 x 0.8 stays under CONFIDENT_THRESHOLD).
+  if (delta <= 60) return score * 0.8;
+  return score * 0.7;
+}
+
+/** Applied to a candidate whose artist tag contradicts the credited artist. */
+const ARTIST_MISMATCH_FACTOR = 0.7;
+
+/**
+ * How well two artist strings agree. Takes the better of plain similarity
+ * and *containment* (how much of the shorter side's words the longer side
+ * has), so a collaboration credit — "Lady Gaga" vs "Lady Gaga feat. Colby
+ * O'Donis", "Skrillex" vs "Fred again.. & Skrillex" — counts as agreement
+ * rather than a mismatch. Never pruned: artist strings are short, and an
+ * underestimate here would wrongly trigger the mismatch penalty.
+ */
+function artistAgreement(a: Prepared, b: Prepared): number {
+  const sim = preparedTextSimilarity(a, b);
+  if (!a.weight || !b.weight) return sim;
+  const small = a.counts.size <= b.counts.size ? a : b;
+  const large = small === a ? b : a;
+  let inter = 0;
+  for (const [t, c] of small.counts) {
+    const other = large.counts.get(t);
+    if (other !== undefined) inter += (c < other ? c : other) * (t.length > 1 ? t.length : 1);
+  }
+  const contained = inter / Math.min(a.weight, b.weight);
+  return contained > sim ? contained : sim;
 }
 
 /**
@@ -598,10 +646,44 @@ function scoreIdentity(want: WantedEntry, id: TrackIdentity, minScore = 0): Matc
   // than a title plus a confirmed artist: where both fit, the one that also
   // agrees on the artist should still win the greedy assignment.
   if (!want.artist && id.title) {
-    const titleOnly = preparedTextSimilarity(want.rawP, id.titleP, floor) * 0.98;
+    let titleOnly = preparedTextSimilarity(want.rawP, id.titleP, floor);
+    if (want.titleP !== want.rawP) {
+      // The featuring-stripped form, so guests in the video title don't count against it.
+      const t = preparedTextSimilarity(want.titleP, id.titleP, floor);
+      if (t > titleOnly) titleOnly = t;
+    }
+    titleOnly *= 0.98;
     if (titleOnly > best) {
       best = titleOnly;
       bestVia = "tags";
+    }
+  }
+
+  // A credited artist that plainly disagrees with the file's artist tag is
+  // strong evidence against the match, however well the strings read
+  // otherwise. Without this, edit distance happily scored "Just Dance"
+  // (Lady Gaga) against "Justice Dance" at 0.77 — "Just" + "ice" is only
+  // three inserts — and that beat the real Lady Gaga file, which had lost
+  // points for being a remix and 21 s longer. `want.artist` is real YouTube
+  // Music metadata only (never a channel guess), so it is safe to trust.
+  // A penalty rather than a veto: mis-tagged artist fields exist, and those
+  // should still show up as a candidate to confirm.
+  if (want.artist && id.artist && artistAgreement(want.artistP, id.artistP) < 0.5) {
+    best *= ARTIST_MISMATCH_FACTOR;
+  }
+
+  // The mirror image: same artist, different song. In the flat "artist
+  // title" comparison a long shared artist name carries most of the weight,
+  // so "The Black Eyed Peas The Time" read 61% like "The Black Eyed Peas I
+  // Gotta Feeling" and took that row. When both titles are known and plainly
+  // disagree, the structured artist/title score — where the title counts
+  // for most — is the ceiling. Exact (unpruned) title score, for the same
+  // reason as `artistAgreement`.
+  if (want.artist && id.artist && id.title) {
+    const titleAgree = artistAgreement(want.titleP, id.titleP);
+    if (titleAgree < 0.5) {
+      const ceiling = titleAgree * 0.62 + artistAgreement(want.artistP, id.artistP) * 0.38;
+      if (best > ceiling) best = ceiling;
     }
   }
 

@@ -361,6 +361,72 @@ describe("matchPlaylist", () => {
     expect(m.status).toBe("missing");
   });
 
+  /** Real case from the owner's library: "Justice Dance" is three inserts
+   * from "Just Dance", and that edit-distance coincidence used to beat the
+   * actual Lady Gaga file (a remix, 21 s off the video). */
+  it("does not let a contradicting artist win on a spelling coincidence", () => {
+    const gaga = file("C:/music/Lady Gaga - Just Dance (Gallardo Remix).mp3", 221);
+    const justice = file("C:/music/Justice - Dance - 14.mp3", 232);
+    const tags = {
+      [gaga.path]: tag({
+        artist: "Lady Gaga",
+        title: "Just Dance",
+        composer: "Lady Gaga - Just Dance (Gallardo Remix) | | Lady Gaga | | Just Dance | | 2008",
+      }),
+      [justice.path]: tag({ artist: "Justice", title: "Dance" }),
+    };
+    const [m] = matchPlaylist(
+      [entry(0, "Just Dance", 242, undefined, undefined, ["Lady Gaga"])],
+      [gaga, justice],
+      tags,
+    );
+    expect(m.candidates[0].path).toBe(gaga.path);
+  });
+
+  /** Real case: both copies the owner has are a different length from the
+   * 4:50 video (a 4:07 edit, a 2:02 remix). The old >25 s rule capped them
+   * at 45%, under the ask bar, so a same-artist *different song* took the row. */
+  it("still offers the right song when every copy owned is a different length", () => {
+    const edit = file("C:/music/The Black Eyed Peas - I Gotta Feeling - 002701.mp3", 247);
+    const quick = file("C:/music/Black Eyed Peas - I Gotta Feeling (Dj Getdown Remix).mp3", 122);
+    const other = file("C:/music/The Black Eyed Peas - The Time - 003308.mp3", 308);
+    const tags = {
+      [edit.path]: tag({ artist: "The Black Eyed Peas", title: "I Gotta Feeling" }),
+      [quick.path]: tag({ artist: "Black Eyed Peas", title: "I Gotta Feeling" }),
+      [other.path]: tag({ artist: "The Black Eyed Peas", title: "The Time" }),
+    };
+    const [m] = matchPlaylist(
+      [entry(0, "I Gotta Feeling", 290, undefined, undefined, ["The Black Eyed Peas"])],
+      [edit, quick, other],
+      tags,
+    );
+    expect(m.status).toBe("ambiguous"); // offered, never auto-accepted at that gap
+    expect(m.candidates[0].path).toBe(edit.path);
+    expect(m.candidates.find((c) => c.path === other.path)?.score ?? 0).toBeLessThan(0.52);
+  });
+
+  it("ignores featured-artist credits in the video title when comparing titles", () => {
+    const f = file("C:/music/1Nonly - Dance.mp3", 163);
+    const tags = { [f.path]: tag({ artist: "1Nonly", title: "Dance" }) };
+    const [m] = matchPlaylist(
+      [entry(0, "DANCE! (feat. Ciscaux & Wassup Rocker)", 164, undefined, undefined, ["1nonly"])],
+      [f],
+      tags,
+    );
+    expect(m.status).toBe("matched");
+  });
+
+  it("treats a collaboration credit as the same artist, not a mismatch", () => {
+    const f = file("C:/music/just-dance.mp3", 242);
+    const tags = { [f.path]: tag({ artist: "Lady Gaga feat. Colby O'Donis", title: "Just Dance" }) };
+    const [m] = matchPlaylist(
+      [entry(0, "Just Dance", 242, undefined, undefined, ["Lady Gaga"])],
+      [f],
+      tags,
+    );
+    expect(m.status).toBe("matched");
+  });
+
   it("offers alternates to step through when several mixes could fit", () => {
     const a = file("C:/music/gravity-a.mp3", 402);
     const b = file("C:/music/gravity-b.mp3", 405);
