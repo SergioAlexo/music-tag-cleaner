@@ -2959,6 +2959,30 @@ real-ffmpeg test that writes yt-dlp-style `purl` into MP3/FLAC/Opus and checks
 read, edit and single-copy round trip, and an index test for the column.
 Toolbar UI not click-tested in `tauri dev`.
 
+### 76. AI Clean year = the original song's year — v0.22.1
+
+**Released as v0.22.1.**
+
+**What/why.** The owner uses Year to judge whether an older crowd will know
+a song, so a new remix or cover must carry the year the *original song* came
+out (David Guetta "Forever Young" → 1984, Alphaville). The old rule said
+"original release year" but models read it as this release's year.
+
+**How.** `YEAR_RULE` in `commands/ai.rs` (shared by Ollama, API, Claude CLI
+and Manual mode) now spells it out: remixes / edits / extended mixes /
+bootlegs / remasters / compilations → the original song's year; covers,
+re-sings, re-recordings and interpolations of an older song's melody, chorus
+or lyrics → the original's year; mashups → the oldest song; a new song that
+only borrows a short sample keeps its own year; unsure → leave the year as is.
+The AI Clean field picker's Year hint says so too.
+
+**Verification.** New prompt test in `ai.rs`; the real prompt (via the
+ignored `print_year_prompt` test) sent through the Claude CLI on six tracks
+came back right: Guetta "Forever Young" 1984, Daft Punk "One More Time"
+(Purple Disco Machine Remix) 2000, Calum Scott "Dancing On My Own" 2010,
+Lost Frequencies "Are You With Me" 2012, and two new songs unchanged. Small
+local Ollama models know less music history and may miss more covers.
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —

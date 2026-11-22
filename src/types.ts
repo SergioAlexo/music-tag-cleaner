@@ -422,7 +422,7 @@ export const DEFAULT_AI_CLEAN_FIELDS: AiCleanField[] = ["artist", "title", "year
 export const AI_CLEAN_FIELD_HINTS: Record<AiCleanField, string> = {
   artist: "Main artist only — no features, labels or channel names",
   title: "Clean song name — no (Radio Edit), (feat. X), (Official Video)…",
-  year: "Original release year of the song",
+  year: "Year the original song came out — also for remixes and covers",
   genre: "One standard genre",
   album: "Original album / single the song came out on",
   albumArtist: "Copy Artist into Album Artist when it is empty (no AI needed)",

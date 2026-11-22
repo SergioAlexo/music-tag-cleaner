@@ -86,7 +86,16 @@ const TITLE_RULE: &str = r#"TITLE: Keep only the clean song name. Strip ALL of t
    - Any version tags in any language
    - YouTube video titles embedded in the tag — extract just the song name"#;
 
-const YEAR_RULE: &str = "YEAR: Return the ORIGINAL release year of the song (when it was first ever released commercially or publicly), NOT the year of a remaster, re-release, streaming upload, or compilation. Use your music knowledge. If you are not certain, leave the existing year unchanged.";
+// The owner is a DJ: the year tells them how old the *song* is (will an older
+// crowd know it?), not when this particular remix or cover came out. The old
+// wording ("original release year") was read as "this release's year", so a
+// new remix of an 80s song came back as the remix's year.
+const YEAR_RULE: &str = r#"YEAR: Return the year the ORIGINAL SONG was first released — the song itself, not this particular version of it. The year must tell a DJ how old the song is.
+   - Remixes, edits, extended/club/radio mixes, bootlegs, VIP mixes, remasters, re-releases, compilations, streaming uploads: return the year the original song came out, NOT the year of the remix or re-release.
+   - Covers, re-sings and re-recordings by another artist, and new tracks built around an older song's recognizable melody, chorus or lyrics (interpolations): return the year the ORIGINAL song came out. Example: David Guetta "Forever Young" is built on Alphaville's "Forever Young" → 1984.
+   - Mashups of several songs: return the year of the OLDEST song in the mashup.
+   - A brand-new song that only borrows a short sample is its own song: return its own year.
+   Use your music knowledge. If you are not certain which song it is based on or when that came out, leave the existing year unchanged."#;
 
 const GENRE_RULE: &str = "GENRE: Normalize to a standard single genre. Use common terms like: Pop, Rock, Hip-Hop, R&B, Reggaeton, House, Techno, Trance, Electronic, Dance, Folk, Country, Jazz, Classical, Metal, Punk, Soul, Funk, Latin, Reggae, Indie, Alternative. Do not use subgenres unless they are very widely recognized.";
 
@@ -404,3 +413,4 @@ fn track_from_value(v: &Value) -> Option<CleanedTrack> {
         album: text("album"),
     })
 }
+

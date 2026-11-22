@@ -88,7 +88,7 @@ fn rejects_an_answer_with_no_json_in_it() {
 fn a_year_only_prompt_asks_for_nothing_else() {
     let prompt =
         ai_clean_prompt(vec![track(1, "Daft Punk", "One More Time")], vec![], Some(vec!["year".into()])).unwrap();
-    assert!(prompt.contains("YEAR: Return the ORIGINAL release year"));
+    assert!(prompt.contains("YEAR: Return the year the ORIGINAL SONG was first released"));
     assert!(prompt.contains("Return ONLY these fields: YEAR."));
     assert!(prompt.contains("\"year\": \"YYYY\""));
     // No rules or output slots for the fields that were not requested.
@@ -118,4 +118,36 @@ fn album_is_returned_only_when_asked_for() {
     let out = ai_parse_clean_response(r#"[{"index":1,"year":"2001","album":"Discovery"}]"#.into()).unwrap();
     assert_eq!(out[0].album.as_deref(), Some("Discovery"));
     assert_eq!(out[0].artist, None);
+}
+
+/// The owner reads Year as "how old is this song", so a remix or cover must
+/// get the original song's year (v0.22.1).
+#[test]
+fn year_rule_asks_for_the_original_song_not_this_version() {
+    let prompt = ai_clean_prompt(vec![track(1, "David Guetta", "Forever Young")], vec![], Some(vec!["year".into()])).unwrap();
+    assert!(prompt.contains("Remixes, edits"));
+    assert!(prompt.contains("Covers, re-sings"));
+    assert!(prompt.contains("Alphaville"));
+    assert!(prompt.contains("OLDEST song in the mashup"));
+    assert!(prompt.contains("only borrows a short sample"));
+}
+
+/// Writes the exact prompt for a few remixes/covers to $MTC_PROMPT_OUT, for
+/// trying the year rule against a real model by hand:
+/// `MTC_PROMPT_OUT=p.txt cargo test print_year_prompt -- --ignored`, then
+/// `claude --print < p.txt`.
+#[test]
+#[ignore]
+fn print_year_prompt() {
+    let t = |i: u32, artist: &str, title: &str, year: &str| TrackInput { year: year.into(), ..track(i, artist, title) };
+    let tracks = vec![
+        t(1, "David Guetta, Alphaville, Ava Max", "Forever Young (Extended Mix)", "2025"),
+        t(2, "Daft Punk", "One More Time (Purple Disco Machine Remix)", "2023"),
+        t(3, "Calum Scott", "Dancing On My Own", "2016"),
+        t(4, "Lost Frequencies", "Are You With Me", "2014"),
+        t(5, "Joel Corry, MNEK", "Head & Heart", "2020"),
+        t(6, "Topic, A7S", "Breaking Me", "2019"),
+    ];
+    let prompt = ai_clean_prompt(tracks, vec![], Some(vec!["year".into()])).unwrap();
+    std::fs::write(std::env::var("MTC_PROMPT_OUT").unwrap(), prompt).unwrap();
 }
