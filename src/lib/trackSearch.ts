@@ -34,6 +34,8 @@ const FIELD_ALIASES: Record<string, keyof TagData | "filename" | "path"> = {
   key: "key",
   lang: "language",
   language: "language",
+  url: "sourceUrl",
+  source: "sourceUrl",
   track: "trackNumber",
   id: "trackId",
   file: "filename",
@@ -106,6 +108,7 @@ export function trackSearchText(file: AudioFile, tag: TagData | undefined): stri
       "originalArtist",
       "trackNumber",
       "trackId",
+      "sourceUrl",
     ] as const) {
       const v = tag[key];
       if (typeof v === "string" && v.trim()) parts.push(v);

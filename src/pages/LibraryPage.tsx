@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Archive,
   Braces,
@@ -24,6 +24,8 @@ import {
   Type,
   Undo2,
   Layers,
+  SlidersHorizontal,
+  Workflow,
 } from "lucide-react";
 import type {
   AiCleanField,
@@ -55,6 +57,17 @@ import type { LibraryIndexApi } from "../hooks/useLibraryIndex";
 import { SessionTabs } from "../components/SessionTabs";
 import { GenreSessionDialog, type GenreSessionChoice } from "../components/GenreSessionDialog";
 import type { SessionTabView } from "../hooks/useSessionTabs";
+import { ToolbarCustomizeDialog } from "../components/ToolbarCustomizeDialog";
+import { actionRegistry } from "../lib/actions";
+import {
+  CUSTOM_PREFIX,
+  describeStep,
+  isDivider,
+  normalizeToolbarOrder,
+  runCustomFeature,
+  visibleToolbarItems,
+  type CustomFeature,
+} from "../lib/toolbarLayout";
 
 /** Whether the open working batch is somewhere other than inside the
  * permanent Library folder — the status line in A6 only needs to show up
@@ -280,6 +293,40 @@ export function LibraryPage({
   const selectedCount = filesApi.selectedPaths.length;
   const noSel = busy || selectedCount === 0;
 
+  // Customizable toolbar (order / hidden / custom sequence features).
+  const [customizeOpen, setCustomizeOpen] = useState(false);
+  const toolbarOrder = useMemo(
+    () => normalizeToolbarOrder(settings.toolbarOrder, settings.customFeatures),
+    [settings.toolbarOrder, settings.customFeatures],
+  );
+  const [sequenceRunning, setSequenceRunning] = useState<string | null>(null);
+  const sequenceCancel = useRef(false);
+  // The run reads the selection again before every step (Rename changes the
+  // paths), so it needs the newest one, not the one from when it started.
+  const selectionRef = useRef(filesApi.selectedPaths);
+  selectionRef.current = filesApi.selectedPaths;
+  const tagsRef = useRef(libraryTags);
+  tagsRef.current = libraryTags;
+  const runCustom = async (feature: CustomFeature) => {
+    if (sequenceRunning) return;
+    sequenceCancel.current = false;
+    setSequenceRunning(feature.id);
+    onTrack?.("customFeature");
+    try {
+      await runCustomFeature({
+        reg: actionRegistry,
+        feature,
+        settings,
+        getSelection: () => selectionRef.current,
+        getTags: () => tagsRef.current,
+        notify,
+        cancelled: () => sequenceCancel.current,
+      });
+    } finally {
+      setSequenceRunning(null);
+    }
+  };
+
   // Library browser sidebar (Folders/Genres/Artists) — a plain in-memory
   // filter over the loaded files, layered underneath the table's own search.
   const [sidebarFilter, setSidebarFilter] = useState<SidebarFilter | null>(null);
@@ -392,6 +439,242 @@ export function LibraryPage({
       : previewMode === "clear"
         ? "Clear Fields"
         : "Standardize";
+
+  // Feature buttons by toolbar id; the owner picks the order and which show
+  // (Customize). Dividers are rendered by the loop below.
+  const toolbarButtons: Record<string, ReactNode> = {
+    backup: (
+      backupRunning ? (
+        <Button variant="destructive" onClick={onStopBackup}>
+          <StopCircle />
+          Stop
+        </Button>
+      ) : (
+        <Button
+          onClick={onBackup}
+          disabled={noSel}
+          title="Write the full + searchable backup for the selected files"
+        >
+          <Archive />
+          Backup
+        </Button>
+      )
+    ),
+    restore: (
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onRestore}
+        disabled={busy || backupCount === 0}
+        title={
+          backupCount === 0
+            ? "None of the selected files contain a tag backup"
+            : `${backupCount} selected file(s) contain a backup`
+        }
+      >
+        <Undo2 />
+        Restore{backupCount > 0 ? ` (${backupCount})` : ""}
+      </Button>
+    ),
+    backupArchive: (
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onBackupArchive}
+        disabled={busy || filesApi.files.length === 0}
+        title={
+          selectedCount > 0
+            ? `Save ${selectedCount} selected file(s) as a single uncompressed .zip you move somewhere safe`
+            : "Save the whole loaded collection as a single uncompressed .zip you move somewhere safe"
+        }
+      >
+        <FileArchive />
+        Backup Archive
+      </Button>
+    ),
+    aiClean: (
+      aiRunning ? (
+        <Button variant="destructive" onClick={onStopAI}>
+          <StopCircle />
+          Stop AI
+        </Button>
+      ) : (
+        <AiCleanMenu
+          fields={settings.aiCleanFields}
+          fillEmptyOnly={settings.aiCleanFillEmptyOnly}
+          backendSuffix={
+            settings.aiBackend === "manual" ? " (manual)" : settings.aiBackend === "claude" ? " (Claude)" : ""
+          }
+          disabled={noSel}
+          onRun={onAIClean}
+          onSaveDefault={onSaveAiCleanFields}
+        />
+      )
+    ),
+    capitalization: (
+      <CapitalizationMenu
+        mode={settings.capitalization}
+        disabled={noSel}
+        onRun={onCapitalization}
+      />
+    ),
+    characters: (
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={onCharacterRules}
+        disabled={noSel}
+        title="Apply the character/separator rules from Settings (feat. style, brackets, dashes, junk suffixes, whitespace) — not recasing"
+      >
+        <Braces />
+        Characters
+      </Button>
+    ),
+    removeChars: (
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={onRemoveChars}
+        disabled={noSel}
+        title={`Remove these characters: ${settings.removeChars || "(none set)"}`}
+      >
+        <Eraser />
+        Remove {settings.removeChars || "chars"}
+      </Button>
+    ),
+    clearFields: (
+      <ClearFieldsMenu
+        selected={settings.clearFields}
+        rawKeys={clearableRawKeys}
+        disabled={noSel}
+        backupFieldKey={backupFieldId ?? undefined}
+        onRun={onClearFields}
+      />
+    ),
+    generateIds: (
+      <Button variant="secondary" size="sm" onClick={onGenerateIds} disabled={noSel}>
+        <Hash />
+        Generate IDs
+      </Button>
+    ),
+    unifyIds: (
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={onUnifyIds}
+        disabled={busy || filesApi.files.length < 2}
+        title="Find files that are the same recording (any format) and give them one shared Track ID so they group as one track"
+      >
+        <Link2 />
+        Unify IDs
+      </Button>
+    ),
+    rekordboxToTags: (
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={onRekordboxToTags}
+        disabled={noSel || !settings.rekordboxXmlPath}
+        title={
+          settings.rekordboxXmlPath
+            ? "Preview writing Rekordbox's BPM, key and rating into the selected files' tags (undoable)"
+            : "Choose a rekordbox.xml in Settings first"
+        }
+      >
+        <Import />
+        Rekordbox → tags
+      </Button>
+    ),
+    convert: (
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={onConvert}
+        disabled={noSel}
+        title="Convert the selected tracks to another format (MP3, FLAC, ALAC, AAC…) — tags and Track ID are carried over"
+      >
+        <Repeat />
+        Convert
+      </Button>
+    ),
+    stems: (
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={onSeparateStems}
+        disabled={noSel}
+        title="Split the selected tracks into stems (drums, bass, vocals, other) with Demucs"
+      >
+        <Layers />
+        Stems
+      </Button>
+    ),
+    standardizeArt: (
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={onStandardizeArt}
+        disabled={noSel}
+        title={`Re-encode embedded cover art to JPEG q${settings.artworkJpegQuality}, longest side ≤ ${settings.artworkMaxDim}px`}
+      >
+        <ImageDown />
+        Standardize Art
+      </Button>
+    ),
+    squareArt: (
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={onSquareArt}
+        disabled={noSel}
+        title="Center-crop embedded cover art to a square (no stretching, no scaling). Undoable."
+      >
+        <Crop />
+        Square Art
+      </Button>
+    ),
+    findArt: (
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={() => onFindArtwork(filesApi.selectedPaths)}
+        disabled={noSel}
+        title="Look up proper cover art (MusicBrainz, iTunes, Deezer). With several tracks selected it fills only the ones without artwork (or with a junk logo) unless you untick that."
+      >
+        <ImageIcon />
+        Find Art
+      </Button>
+    ),
+    junkArt: (
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={onJunkArt}
+        title="Find the same cover repeated across unrelated artists (DJ-pool logos) and placeholder art"
+      >
+        <ScanSearch />
+        Junk Art
+      </Button>
+    ),
+    standardizeContainers: (
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={onStandardizeContainers}
+        disabled={noSel}
+        title="Move each track's tags into the one container its format calls standard — ID3v2 for mp3/wav/aiff, Vorbis Comments for flac/ogg, MP4 atoms for m4a/aac — and drop the leftovers (ID3v1, APE). Values are moved, not changed."
+      >
+        <Layers />
+        Standardize Tag Format
+      </Button>
+    ),
+    rename: (
+      <Button variant="secondary" size="sm" onClick={onRename} disabled={noSel}>
+        <Type />
+        Rename to Standard
+      </Button>
+    ),
+  };
 
   return (
     <div className="flex h-full flex-col gap-4 p-6">
@@ -550,206 +833,40 @@ export function LibraryPage({
           </Button>
           <span className="mx-1 h-6 w-px bg-border" />
 
-          {backupRunning ? (
-            <Button variant="destructive" onClick={onStopBackup}>
+          {visibleToolbarItems(toolbarOrder, settings.toolbarHidden).map((id) => {
+            if (isDivider(id)) return <span key={id} className="mx-1 h-6 w-px bg-border" />;
+            if (id.startsWith(CUSTOM_PREFIX)) {
+              const feature = settings.customFeatures.find((c) => CUSTOM_PREFIX + c.id === id);
+              if (!feature) return null;
+              return (
+                <Button
+                  key={id}
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => void runCustom(feature)}
+                  disabled={noSel || sequenceRunning !== null || feature.steps.length === 0}
+                  title={`Runs in order: ${feature.steps.map(describeStep).join(" → ")}`}
+                >
+                  <Workflow />
+                  {sequenceRunning === feature.id ? `${feature.name}…` : feature.name}
+                </Button>
+              );
+            }
+            return <Fragment key={id}>{toolbarButtons[id]}</Fragment>;
+          })}
+          {sequenceRunning !== null && (
+            <Button variant="destructive" size="sm" onClick={() => (sequenceCancel.current = true)} title="Stop the custom feature after the current step">
               <StopCircle />
-              Stop
-            </Button>
-          ) : (
-            <Button
-              onClick={onBackup}
-              disabled={noSel}
-              title="Write the full + searchable backup for the selected files"
-            >
-              <Archive />
-              Backup
+              Stop sequence
             </Button>
           )}
           <Button
-            variant="outline"
-            size="sm"
-            onClick={onRestore}
-            disabled={busy || backupCount === 0}
-            title={
-              backupCount === 0
-                ? "None of the selected files contain a tag backup"
-                : `${backupCount} selected file(s) contain a backup`
-            }
+            variant="ghost"
+            size="icon"
+            onClick={() => setCustomizeOpen(true)}
+            title="Customize toolbar — reorder, hide, and make custom features that run several in sequence"
           >
-            <Undo2 />
-            Restore{backupCount > 0 ? ` (${backupCount})` : ""}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onBackupArchive}
-            disabled={busy || filesApi.files.length === 0}
-            title={
-              selectedCount > 0
-                ? `Save ${selectedCount} selected file(s) as a single uncompressed .zip you move somewhere safe`
-                : "Save the whole loaded collection as a single uncompressed .zip you move somewhere safe"
-            }
-          >
-            <FileArchive />
-            Backup Archive
-          </Button>
-
-          <span className="mx-1 h-6 w-px bg-border" />
-
-          {aiRunning ? (
-            <Button variant="destructive" onClick={onStopAI}>
-              <StopCircle />
-              Stop AI
-            </Button>
-          ) : (
-            <AiCleanMenu
-              fields={settings.aiCleanFields}
-              fillEmptyOnly={settings.aiCleanFillEmptyOnly}
-              backendSuffix={
-                settings.aiBackend === "manual" ? " (manual)" : settings.aiBackend === "claude" ? " (Claude)" : ""
-              }
-              disabled={noSel}
-              onRun={onAIClean}
-              onSaveDefault={onSaveAiCleanFields}
-            />
-          )}
-
-          <span className="mx-1 h-6 w-px bg-border" />
-
-          <CapitalizationMenu
-            mode={settings.capitalization}
-            disabled={noSel}
-            onRun={onCapitalization}
-          />
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={onCharacterRules}
-            disabled={noSel}
-            title="Apply the character/separator rules from Settings (feat. style, brackets, dashes, junk suffixes, whitespace) — not recasing"
-          >
-            <Braces />
-            Characters
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={onRemoveChars}
-            disabled={noSel}
-            title={`Remove these characters: ${settings.removeChars || "(none set)"}`}
-          >
-            <Eraser />
-            Remove {settings.removeChars || "chars"}
-          </Button>
-          <ClearFieldsMenu
-            selected={settings.clearFields}
-            rawKeys={clearableRawKeys}
-            disabled={noSel}
-            backupFieldKey={backupFieldId ?? undefined}
-            onRun={onClearFields}
-          />
-          <span className="mx-1 h-6 w-px bg-border" />
-
-          <Button variant="secondary" size="sm" onClick={onGenerateIds} disabled={noSel}>
-            <Hash />
-            Generate IDs
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={onUnifyIds}
-            disabled={busy || filesApi.files.length < 2}
-            title="Find files that are the same recording (any format) and give them one shared Track ID so they group as one track"
-          >
-            <Link2 />
-            Unify IDs
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={onRekordboxToTags}
-            disabled={noSel || !settings.rekordboxXmlPath}
-            title={
-              settings.rekordboxXmlPath
-                ? "Preview writing Rekordbox's BPM, key and rating into the selected files' tags (undoable)"
-                : "Choose a rekordbox.xml in Settings first"
-            }
-          >
-            <Import />
-            Rekordbox → tags
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={onConvert}
-            disabled={noSel}
-            title="Convert the selected tracks to another format (MP3, FLAC, ALAC, AAC…) — tags and Track ID are carried over"
-          >
-            <Repeat />
-            Convert
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={onSeparateStems}
-            disabled={noSel}
-            title="Split the selected tracks into stems (drums, bass, vocals, other) with Demucs"
-          >
-            <Layers />
-            Stems
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={onStandardizeArt}
-            disabled={noSel}
-            title={`Re-encode embedded cover art to JPEG q${settings.artworkJpegQuality}, longest side ≤ ${settings.artworkMaxDim}px`}
-          >
-            <ImageDown />
-            Standardize Art
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={onSquareArt}
-            disabled={noSel}
-            title="Center-crop embedded cover art to a square (no stretching, no scaling). Undoable."
-          >
-            <Crop />
-            Square Art
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => onFindArtwork(filesApi.selectedPaths)}
-            disabled={noSel}
-            title="Look up proper cover art (MusicBrainz, iTunes, Deezer). With several tracks selected it fills only the ones without artwork (or with a junk logo) unless you untick that."
-          >
-            <ImageIcon />
-            Find Art
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={onJunkArt}
-            title="Find the same cover repeated across unrelated artists (DJ-pool logos) and placeholder art"
-          >
-            <ScanSearch />
-            Junk Art
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={onStandardizeContainers}
-            disabled={noSel}
-            title="Move each track's tags into the one container its format calls standard — ID3v2 for mp3/wav/aiff, Vorbis Comments for flac/ogg, MP4 atoms for m4a/aac — and drop the leftovers (ID3v1, APE). Values are moved, not changed."
-          >
-            <Layers />
-            Standardize Tag Format
-          </Button>
-          <Button variant="secondary" size="sm" onClick={onRename} disabled={noSel}>
-            <Type />
-            Rename to Standard
+            <SlidersHorizontal />
           </Button>
 
           <span className="ml-auto flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -858,6 +975,16 @@ export function LibraryPage({
           )}
         </div>
       </div>
+      {customizeOpen && (
+        <ToolbarCustomizeDialog
+          order={toolbarOrder}
+          hidden={settings.toolbarHidden}
+          customs={settings.customFeatures}
+          rawKeys={clearableRawKeys}
+          onSave={onSaveSettings}
+          onClose={() => setCustomizeOpen(false)}
+        />
+      )}
       {genreDialog && (
         <GenreSessionDialog
           label={facetLabel(genreDialog)}

@@ -1,3 +1,4 @@
+import { DEFAULT_TOOLBAR_ORDER, normalizeCustomFeatures, normalizeToolbarOrder } from "../lib/toolbarLayout";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { load, type Store } from "@tauri-apps/plugin-store";
@@ -8,7 +9,7 @@ import { DEFAULT_LYRICS_OUTPUT, normalizeOutputSettings } from "../lib/lyricsOut
 import { DEFAULT_FLAG_EXTRA_CHARS, DEFAULT_REPLACEMENTS } from "../lib/standardize";
 
 // 22 is reserved for C1 (playlists), 25 for F2; gaps are fine.
-export const CURRENT_SETTINGS_VERSION = 27;
+export const CURRENT_SETTINGS_VERSION = 28;
 
 export const DEFAULT_SETTINGS: Settings = {
   aiBackend: "ollama",
@@ -94,6 +95,9 @@ export const DEFAULT_SETTINGS: Settings = {
   aiCleanFillEmptyOnly: false,
   duplicateSkipped: [],
   duplicateAlternatePolicy: "none",
+  toolbarOrder: DEFAULT_TOOLBAR_ORDER,
+  toolbarHidden: [],
+  customFeatures: [],
 };
 
 const STORE_FILE = "settings.json";
@@ -135,6 +139,13 @@ export function mergeWithDefaults(saved: Partial<Settings>): Settings {
     ? saved.duplicateSkipped.filter((k): k is string => typeof k === "string")
     : [];
   if (merged.duplicateAlternatePolicy !== "keepExtended") merged.duplicateAlternatePolicy = "none";
+  // Toolbar layout: a hand-edited file or an order saved before a new button
+  // existed must still show every button (missing ones are appended).
+  merged.customFeatures = normalizeCustomFeatures(saved.customFeatures);
+  merged.toolbarOrder = normalizeToolbarOrder(saved.toolbarOrder, merged.customFeatures);
+  merged.toolbarHidden = Array.isArray(saved.toolbarHidden)
+    ? saved.toolbarHidden.filter((k): k is string => typeof k === "string")
+    : [];
   return merged;
 }
 
@@ -282,6 +293,8 @@ export function migrate(s: Settings, savedVersion: number): Settings {
   // duplicateSkipped / duplicateAlternatePolicy (Duplicates page). All filled
   // in and validated by mergeWithDefaults, so no data step is needed; the
   // default field set is exactly what AI Clean did before the picker existed.
+  // v28: toolbarOrder / toolbarHidden / customFeatures (customizable toolbar).
+  // Filled in by mergeWithDefaults; the default order is the old fixed toolbar.
   next.settingsVersion = CURRENT_SETTINGS_VERSION;
   return next;
 }

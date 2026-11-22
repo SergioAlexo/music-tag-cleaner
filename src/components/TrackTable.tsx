@@ -125,6 +125,8 @@ export const ALL_COLUMNS: ColumnDef[] = [
     value: (_f, t) => t?.originalArtist ?? "",
   },
   { id: "comment", label: "Comment", width: 200, field: "comment", value: (_f, t) => t?.comment ?? "" },
+  // Where the track came from (MediaFetch writes the page link as `purl`).
+  { id: "sourceUrl", label: "Source URL", width: 220, field: "sourceUrl", value: (_f, t) => t?.sourceUrl ?? "" },
   // BPM / Key: the file's own tag first, Rekordbox's analysis when the tag is
   // empty (marked "RB" in the cell). Editable like any other curated field.
   {

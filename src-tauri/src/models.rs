@@ -45,6 +45,10 @@ pub struct TagData {
     /// Language of the vocals as an ISO 639-2 code (`spa`, `eng`, `zxx` for
     /// instrumentals): ID3 TLAN, Vorbis `LANGUAGE`.
     pub language: Option<String>,
+    /// Link the track was downloaded from. yt-dlp's `--embed-metadata` (what
+    /// MediaFetch uses) writes the page URL as `purl`: ID3 `TXXX:purl`, Vorbis
+    /// `PURL`. ffmpeg drops it for M4A, where only Comment carries the link.
+    pub source_url: Option<String>,
     pub has_cover_art: bool,
     /// Full dump of every text field in the tag, keyed by a canonical
     /// (format-independent) name like `TrackTitle` or `Unknown(FOO)`.

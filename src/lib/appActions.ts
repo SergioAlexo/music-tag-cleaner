@@ -137,7 +137,7 @@ export function publicSettings(s: Settings): Record<string, unknown> {
 
 const TAG_FIELDS = [
   "title", "artist", "album", "albumArtist", "trackNumber", "discNumber", "year", "genre",
-  "comment", "composer", "originalArtist", "trackId", "bpm", "key", "language",
+  "comment", "composer", "originalArtist", "trackId", "bpm", "key", "language", "sourceUrl",
 ];
 
 export function registerAppActions(reg: ActionRegistry, get: () => AppEnv): void {

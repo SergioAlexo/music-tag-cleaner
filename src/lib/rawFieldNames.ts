@@ -46,6 +46,7 @@ export const RAW_FIELD_NAMES: Record<string, Record<TagFamily, string>> = {
   trackId: { id3: "TXXX:TRACKID", vorbis: "TRACKID", mp4: "----:com.apple.iTunes:TRACKID" },
   rating: { id3: "POPM", vorbis: "—", mp4: "—" },
   language: { id3: "TLAN", vorbis: "LANGUAGE", mp4: "----:com.apple.iTunes:LANGUAGE" },
+  sourceUrl: { id3: "TXXX:purl", vorbis: "PURL", mp4: "----:com.apple.iTunes:purl" },
 };
 
 /** Most common tag family among the loaded files — used to pick one raw name per column header. */

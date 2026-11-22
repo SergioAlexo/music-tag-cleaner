@@ -2911,6 +2911,54 @@ the right one.
 **Verification.** `npm run build`, vitest 426, cargo test 282. Not
 click-tested in `tauri dev`.
 
+### 75. Customizable toolbar, custom sequence features, Source URL — v0.22.0
+
+**Released as v0.22.0.**
+
+**What/why.** The owner wanted to reorder and hide the Library toolbar's
+feature buttons, and to build their own buttons that run several features
+one after another, with per-step options (e.g. Clear Fields: clear these, or
+keep these and clear the rest). They also wanted the link MediaFetch embeds
+in its downloads to be a proper field here.
+
+**How.**
+- **Customize toolbar** (sliders icon at the end of the toolbar,
+  `ToolbarCustomizeDialog.tsx`): up/down arrows reorder, the eye hides. Up/down
+  buttons, not drag, for the webview drag-freeze reason in CLAUDE.md. Dividers
+  are movable/hideable items and tidy themselves (never leading, trailing or
+  doubled). Undo / Redo / History / Compare stay fixed. Settings v28:
+  `toolbarOrder`, `toolbarHidden`, `customFeatures`; `normalizeToolbarOrder`
+  appends any button missing from a saved order, so a new built-in is never lost.
+- **Custom features** (`src/lib/toolbarLayout.ts`): a named list of steps run
+  through the action registry, the same path as the AI bridge. A step that only
+  builds a preview is applied before the next step runs (otherwise step 2 would
+  read the old tags from disk and silently undo step 1), or, with
+  "Pause to review each preview", the run waits until the preview is applied or
+  cancelled. Dialog-only features (Convert, Stems, Find Art, Junk Art, Unify IDs,
+  Backup Archive) can't be chained. Stop sequence button; the selection is
+  re-read before every step because Rename changes the paths.
+- **Per-step options** (`SequenceStep`): Clear Fields clear-these /
+  keep-these-clear-the-rest (`fieldsToClearKeeping`: every clearable curated
+  field plus every raw frame on the tracks, minus the kept ones; Title, Artist,
+  BPM, Key and Rating are never clearable), Capitalization mode, AI Clean fields.
+  Unset = use Settings. Steps saved as bare ids still load.
+- **Source URL** (`TagData.sourceUrl`). MediaFetch downloads through yt-dlp
+  `--embed-metadata`, which passes ffmpeg `-metadata purl=<page url>` (and the
+  same URL as `comment`): ID3 `TXXX:purl`, Vorbis `purl`/`PURL`. ffmpeg drops it
+  for M4A, where only Comment carries the link. Gotcha: lofty never turns a TXXX
+  frame whose description is exactly 4 characters into a generic item, so on
+  ID3 `purl` is a hidden companion frame; it is read via `Id3v2Tag::get_user_text`
+  in `tag_data_from` and written in `save_tag` (`set_id3_source_url`), like POPM.
+  New Source URL column, Clear Fields target, `url:` / `source:` search, kept
+  out of the raw "All Tags" view (KEPT_FIELD_KEYS in Rust + TS).
+- **Library index v6** stores `source_url`, so library search finds tracks by
+  link. The version bump makes the first refresh re-read every file once.
+
+**Verification.** `npm run build`, vitest 440, cargo test 284, including a
+real-ffmpeg test that writes yt-dlp-style `purl` into MP3/FLAC/Opus and checks
+read, edit and single-copy round trip, and an index test for the column.
+Toolbar UI not click-tested in `tauri dev`.
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —

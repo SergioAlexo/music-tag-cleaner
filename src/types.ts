@@ -1,3 +1,4 @@
+import type { CustomFeature } from "./lib/toolbarLayout";
 import type { SyncSettings } from "./lib/djSync";
 import type { LyricsOutputSettings } from "./lib/lyricsOutput";
 import type { GenreClickChoice } from "./lib/sessionTabs";
@@ -41,6 +42,8 @@ export interface TagData {
   key?: string;
   /** Language of the vocals, ISO 639-2 (TLAN / LANGUAGE); `zxx` = instrumental. */
   language?: string;
+  /** Link the track was downloaded from (MediaFetch / yt-dlp `purl`: ID3 TXXX:purl, Vorbis PURL). */
+  sourceUrl?: string;
   hasCoverArt: boolean;
   /** Full dump of every text field, keyed by canonical lofty key name. */
   allFields: Record<string, string>;
@@ -389,6 +392,12 @@ export interface Settings {
   aiCleanFields: AiCleanField[];
   /** When true, AI Clean only fills fields that are empty; filled ones are left alone. */
   aiCleanFillEmptyOnly: boolean;
+  /** Library toolbar feature buttons in display order (built-in ids, `sepN` dividers, `custom:<id>`). See lib/toolbarLayout.ts. */
+  toolbarOrder: string[];
+  /** Toolbar items the owner hid. */
+  toolbarHidden: string[];
+  /** The owner's own buttons that run several features in sequence. */
+  customFeatures: CustomFeature[];
   /**
    * Duplicate groups the owner skipped ("not now / leave these"), as
    * `duplicateGroupKey()` values. A later scan hides them until they ask to
@@ -460,6 +469,7 @@ export const CLEARABLE_FIELDS = [
   "composer",
   "originalArtist",
   "language",
+  "sourceUrl",
 ] as const;
 
 export interface PendingChange {
@@ -517,6 +527,10 @@ export const KEPT_FIELD_KEYS = new Set([
   "Unknown(ORIGINALARTIST)",
   "Unknown(----:com.apple.iTunes:TRACKID)",
   "Unknown(----:com.apple.iTunes:ORIGINALARTIST)",
+  // Source URL (MediaFetch / yt-dlp `purl`) has its own curated column.
+  "Unknown(purl)",
+  "Unknown(PURL)",
+  "Unknown(----:com.apple.iTunes:purl)",
 ]);
 
 export const FIELD_LABELS: Record<string, string> = {
@@ -536,6 +550,7 @@ export const FIELD_LABELS: Record<string, string> = {
   bpm: "BPM",
   key: "Key",
   language: "Language",
+  sourceUrl: "Source URL",
 };
 
 // v0.9 F5 — Rekordbox cue import. Field names are camelCase to match the
@@ -679,6 +694,8 @@ export interface IndexedTrack {
   tagKey?: string | null;
   /** The Language tag, lowercased (index v5). */
   language?: string | null;
+  /** Source URL, MediaFetch / yt-dlp `purl` (index v6). */
+  sourceUrl?: string | null;
   bpm?: number | null;
   key?: string | null;
 }
@@ -799,6 +816,7 @@ export function indexedToTags(t: IndexedTrack): TagData {
     bpm: t.tagBpm ?? undefined,
     key: t.tagKey ?? undefined,
     language: t.language ?? undefined,
+    sourceUrl: t.sourceUrl ?? undefined,
     hasCoverArt: t.hasCoverArt,
     allFields: {},
   };

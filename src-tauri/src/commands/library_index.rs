@@ -62,6 +62,10 @@ pub const KEPT_FIELD_KEYS: &[&str] = &[
     "Unknown(ORIGINALARTIST)",
     "Unknown(----:com.apple.iTunes:TRACKID)",
     "Unknown(----:com.apple.iTunes:ORIGINALARTIST)",
+    // Source URL (MediaFetch / yt-dlp `purl`) has its own curated column.
+    "Unknown(purl)",
+    "Unknown(PURL)",
+    "Unknown(----:com.apple.iTunes:purl)",
 ];
 
 const SCHEMA_SQL: &str = "
@@ -87,7 +91,8 @@ CREATE TABLE IF NOT EXISTS library_track (
     indexed_at INTEGER NOT NULL,
     bpm_tag TEXT,
     key_tag TEXT,
-    language TEXT
+    language TEXT,
+    source_url TEXT
 );
 CREATE INDEX IF NOT EXISTS library_track_genre ON library_track(genre);
 CREATE INDEX IF NOT EXISTS library_track_album ON library_track(album);
@@ -140,7 +145,10 @@ CREATE TABLE IF NOT EXISTS rekordbox_track (
 ///
 /// v5: the Language tag (TLAN / LANGUAGE) is stored, lowercased, for the
 ///     Languages facet.
-const INDEX_VERSION: i64 = 5;
+///
+/// v6: the Source URL (MediaFetch / yt-dlp `purl`) is stored, so the library
+///     search finds a track by the link it was downloaded from.
+const INDEX_VERSION: i64 = 6;
 
 fn stored_index_version(conn: &Connection) -> i64 {
     conn.query_row(
@@ -192,7 +200,7 @@ fn migrate_columns(conn: &Connection) -> Result<(), String> {
             .collect();
         rows
     };
-    for (col, ty) in [("bpm_tag", "TEXT"), ("key_tag", "TEXT"), ("language", "TEXT")] {
+    for (col, ty) in [("bpm_tag", "TEXT"), ("key_tag", "TEXT"), ("language", "TEXT"), ("source_url", "TEXT")] {
         if !have.contains(col) {
             conn.execute(&format!("ALTER TABLE library_track ADD COLUMN {col} {ty}"), [])
                 .map_err(|e| e.to_string())?;
@@ -264,8 +272,8 @@ fn upsert_track(
                 path, mtime, size, format, duration_secs, has_backup, has_cover,
                 title, artist, album, album_artist, genre, year, comment,
                 composer, original_artist, track_id, rating, indexed_at,
-                bpm_tag, key_tag, language
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
+                bpm_tag, key_tag, language, source_url
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
         )
         .map_err(|e| e.to_string())?;
     stmt.execute(params![
@@ -297,6 +305,7 @@ fn upsert_track(
         tags.language
             .map(|l| l.trim().to_lowercase())
             .filter(|l| !l.is_empty()),
+        tags.source_url.filter(|u| !u.trim().is_empty()),
     ])
     .map(|_| ())
     .map_err(|e| e.to_string())
@@ -361,6 +370,8 @@ pub struct IndexedTrack {
     pub tag_key: Option<String>,
     /// The Language tag (ISO 639-2 code when written by this app), lowercased.
     pub language: Option<String>,
+    /// Source URL (MediaFetch / yt-dlp `purl`), index v6.
+    pub source_url: Option<String>,
     /// From a Rekordbox XML import (D0), joined in by path — not file-tag
     /// data, so it's `None` for every track until that's been run once.
     pub bpm: Option<f64>,
@@ -709,6 +720,7 @@ fn row_to_track(r: &rusqlite::Row) -> rusqlite::Result<IndexedTrack> {
         tag_bpm: r.get("bpm_tag")?,
         tag_key: r.get("key_tag")?,
         language: r.get("language")?,
+        source_url: r.get("source_url")?,
         bpm: r.get("rb_bpm")?,
         key: r.get("rb_key")?,
         path,
@@ -1471,6 +1483,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(idx, 1);
+        // v6: Source URL.
+        conn.execute("UPDATE library_track SET source_url = 'https://youtu.be/x'", []).unwrap();
     }
 
     #[test]
@@ -1520,6 +1534,40 @@ mod tests {
         tx.commit().unwrap();
         let lang: String = conn.query_row("SELECT language FROM library_track", [], |r| r.get(0)).unwrap();
         assert_eq!(lang, "spa");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// MP3 keeps the Source URL in a companion TXXX:purl frame the generic
+    /// tag can't see; the index must still pick it up (read_for_index goes
+    /// through tag_data_from) and hand it back to the frontend.
+    #[test]
+    fn a_files_source_url_is_indexed_and_listed() {
+        let dir = std::env::temp_dir().join(format!("mtc-urlidx-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.mp3");
+        let mut bytes = Vec::new();
+        for _ in 0..20 {
+            bytes.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+            bytes.extend(std::iter::repeat(0u8).take(413));
+        }
+        std::fs::write(&path, bytes).unwrap();
+        let p = path.to_str().unwrap();
+        let mut tags = crate::commands::files::read_tags_impl(p).unwrap();
+        tags.source_url = Some("https://youtu.be/abc".into());
+        crate::commands::files::write_tags_blocking(p, tags, false, vec![], true, None).unwrap();
+        let row = crate::commands::files::read_for_index(p).unwrap();
+        let conn = mem_db();
+        let tx = conn.unchecked_transaction().unwrap();
+        upsert_track(&tx, p, 1, 1, row, 100).unwrap();
+        tx.commit().unwrap();
+        let t = conn
+            .query_row(
+                "SELECT lt.*, NULL AS rb_bpm, NULL AS rb_key FROM library_track lt",
+                [],
+                row_to_track,
+            )
+            .unwrap();
+        assert_eq!(t.source_url.as_deref(), Some("https://youtu.be/abc"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

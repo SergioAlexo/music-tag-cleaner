@@ -57,6 +57,20 @@ fn original_artist_keys(tag_type: TagType) -> Vec<ItemKey> {
     keys
 }
 
+/// Source URL (MediaFetch / yt-dlp `purl`). ffmpeg writes the key in lower
+/// case; Vorbis readers commonly upper-case it, so both spellings are read and
+/// the one native to the format is written first.
+fn source_url_keys(tag_type: TagType) -> Vec<ItemKey> {
+    let (first, second) = if matches!(tag_type, TagType::VorbisComments) {
+        ("PURL", "purl")
+    } else {
+        ("purl", "PURL")
+    };
+    let mut keys = private_keys(tag_type, first);
+    keys.extend(private_keys(tag_type, second));
+    keys
+}
+
 fn first_text(tag: &Tag, keys: &[ItemKey]) -> Option<String> {
     keys.iter().find_map(|k| get_text(tag, k))
 }
@@ -417,12 +431,20 @@ pub(crate) fn read_for_index(path: &str) -> Result<IndexRow, String> {
 /// accessors alone meant an MP3's rating (Rekordbox's included) was never read.
 pub(crate) fn tag_data_from(mut tagged: lofty::file::TaggedFile) -> TagData {
     let mut data = tag_data_of(&tagged);
-    if data.rating.is_none()
+    // The Source URL's TXXX:purl is a companion frame too: lofty never turns a
+    // TXXX whose description is exactly 4 characters into a generic item.
+    if (data.rating.is_none() || data.source_url.is_none())
         && main_tag(&tagged)
             .is_some_and(|t| t.tag_type() == TagType::Id3v2 && t.has_format_specific_items())
     {
         if let Some(tag) = tagged.remove(TagType::Id3v2) {
-            data.rating = popm_stars(&tag.into()).filter(|s| *s > 0);
+            let id3: lofty::id3::v2::Id3v2Tag = tag.into();
+            if data.rating.is_none() {
+                data.rating = popm_stars(&id3).filter(|s| *s > 0);
+            }
+            if data.source_url.is_none() {
+                data.source_url = id3_source_url(&id3);
+            }
         }
     }
     data
@@ -579,6 +601,7 @@ fn tag_data_of_tag(tag: &Tag) -> TagData {
         bpm: bpm_of(tag),
         key: get_text(tag, &ItemKey::InitialKey),
         language: get_text(tag, &ItemKey::Language),
+        source_url: first_text(tag, &source_url_keys(tag.tag_type())),
         has_cover_art: !tag.pictures().is_empty(),
         all_fields: Default::default(),
     };
@@ -648,6 +671,31 @@ fn stars_from_text_rating(s: &str) -> Option<u8> {
     let n = s.trim().parse::<f64>().ok().filter(|n| *n > 0.0)?;
     let stars = if n <= 5.0 { n.round() } else { (n / 20.0).round() };
     Some((stars as u8).clamp(1, 5))
+}
+
+/// ID3 description of the Source URL frame, as yt-dlp/ffmpeg write it.
+const ID3_SOURCE_URL: &str = "purl";
+
+fn id3_source_url(tag: &lofty::id3::v2::Id3v2Tag) -> Option<String> {
+    [ID3_SOURCE_URL, "PURL"]
+        .iter()
+        .find_map(|d| tag.get_user_text(d))
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Sets (or, for blank, removes) the ID3 Source URL frame. A no-op when the
+/// value is unchanged, so an unrelated edit never rewrites it.
+fn set_id3_source_url(tag: &mut lofty::id3::v2::Id3v2Tag, new: &Option<String>) {
+    let new = non_blank(new);
+    if id3_source_url(tag).as_deref() == new {
+        return;
+    }
+    tag.remove_user_text(ID3_SOURCE_URL);
+    tag.remove_user_text("PURL");
+    if let Some(v) = new {
+        tag.insert_user_text(ID3_SOURCE_URL.to_string(), v.to_string());
+    }
 }
 
 /// Stars from the first rated POPM frame of an ID3v2 tag.
@@ -886,7 +934,7 @@ fn is_curated_key(key: &ItemKey) -> bool {
     ) || matches!(key, ItemKey::Unknown(k)
         if matches!(
             k.strip_prefix(MP4_FREEFORM_PREFIX).unwrap_or(k.as_str()),
-            "TRACKID" | "RATING" | "ORIGINALARTIST"
+            "TRACKID" | "RATING" | "ORIGINALARTIST" | "purl" | "PURL"
         ))
 }
 
@@ -998,7 +1046,12 @@ fn repair_item_languages(tag: &mut Tag) {
 /// the rating alone). ID3v2 goes through `Id3v2Tag` so its POPM frames can be
 /// edited in place — they live in the tag's format-specific companion, out of
 /// reach of the generic API.
-fn save_tag(mut tag: Tag, rating: Option<u8>, work: &mut WorkingCopy) -> Result<(), String> {
+fn save_tag(
+    mut tag: Tag,
+    rating: Option<u8>,
+    source_url: &Option<String>,
+    work: &mut WorkingCopy,
+) -> Result<(), String> {
     repair_item_languages(&mut tag);
     work.rewind_to_start()?;
     if tag.tag_type() == TagType::Id3v2 {
@@ -1006,6 +1059,7 @@ fn save_tag(mut tag: Tag, rating: Option<u8>, work: &mut WorkingCopy) -> Result<
         if let Some(stars) = rating {
             set_popm_rating(&mut id3, stars);
         }
+        set_id3_source_url(&mut id3, source_url);
         return id3.save_to(work, WriteOptions::default()).map_err(|e| e.to_string());
     }
     let mut tag = tag;
@@ -1175,6 +1229,10 @@ fn write_tags_into(
     write_field(&mut tag, &bpm_keys(tag_type), &old.bpm, &new_bpm);
     write_field(&mut tag, &[ItemKey::InitialKey], &old.key, &tags.key);
     write_field(&mut tag, &[ItemKey::Language], &old.language, &tags.language);
+    // ID3v2 keeps it in a companion TXXX frame, set by `save_tag`.
+    if tag_type != TagType::Id3v2 {
+        write_field(&mut tag, &source_url_keys(tag_type), &old.source_url, &tags.source_url);
+    }
 
     // 4. Searchable backup — only into a field that is empty before and after.
     if let Some(key) = backup_key {
@@ -1197,7 +1255,7 @@ fn write_tags_into(
         remove_container(tt, work)?;
     }
     let companion = legacy.map(|tt| build_legacy_companion(&tag, tt));
-    save_tag(tag, tags.rating, work)?;
+    save_tag(tag, tags.rating, &tags.source_url, work)?;
     if let Some(c) = companion {
         save_generic_tag(&c, work)?;
     }
@@ -3760,5 +3818,54 @@ mod tests {
         println!("checked {checked} real files");
         assert!(checked > 0, "no readable audio under {dir}");
         std::fs::remove_dir_all(&scratch_dir).ok();
+    }
+    /// MediaFetch downloads through yt-dlp `--embed-metadata`, which hands
+    /// ffmpeg `-metadata purl=<page url>`. Files are made the same way here
+    /// (real ffmpeg) so the test sees the exact frames ffmpeg writes, not ones
+    /// lofty wrote itself. Skipped when ffmpeg isn't on PATH.
+    #[test]
+    fn source_url_reads_ytdlp_purl_and_round_trips() {
+        let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+        let Some(ffmpeg) = std::env::var("PATH").ok().and_then(|p| {
+            std::env::split_paths(&p).map(|d| d.join(exe)).find(|c| c.is_file())
+        }) else {
+            eprintln!("ffmpeg not on PATH - skipping");
+            return;
+        };
+        let dir = scratch("purl");
+        let url = "https://www.youtube.com/watch?v=abc123";
+        for ext in ["mp3", "flac", "opus"] {
+            let path = dir.join(format!("t.{ext}"));
+            let ok = std::process::Command::new(&ffmpeg)
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=d=1", "-metadata", "title=T"])
+                .arg("-metadata").arg(format!("purl={url}"))
+                .arg("-metadata").arg(format!("comment={url}"))
+                .arg(&path)
+                .status()
+                .expect("run ffmpeg")
+                .success();
+            assert!(ok, "ffmpeg failed for {ext}");
+            let p = path.to_str().unwrap().to_string();
+            let read = read_tags_impl(&p).unwrap();
+            assert_eq!(read.source_url.as_deref(), Some(url), "{ext}: purl not read; fields {:?}", read.all_fields);
+
+            // Edit it and make sure exactly one copy comes back.
+            let mut edited = read.clone();
+            edited.source_url = Some("https://soundcloud.com/x/y".into());
+            write_tags_blocking(&p, edited, false, vec![], false, None).unwrap();
+            let back = read_tags_impl(&p).unwrap();
+            assert_eq!(back.source_url.as_deref(), Some("https://soundcloud.com/x/y"), "{ext}: edit lost");
+            let copies = if ext == "mp3" {
+                // ID3 keeps it out of the generic dump (companion TXXX frame).
+                let raw = std::fs::read(&path).unwrap();
+                raw.windows(5).filter(|w| w.eq_ignore_ascii_case(b"purl ")).count()
+            } else {
+                back.all_fields.keys().filter(|k| k.to_lowercase().contains("purl")).count()
+            };
+            assert_eq!(copies, 1, "{ext}: expected one purl, found {copies}; fields {:?}", back.all_fields);
+            assert_eq!(back.title.as_deref(), Some("T"), "{ext}: title lost");
+            println!("{ext}: ok {:?}", back.all_fields.keys().filter(|k| k.to_lowercase().contains("purl")).collect::<Vec<_>>());
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
