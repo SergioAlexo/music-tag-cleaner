@@ -3010,6 +3010,31 @@ pictures over 359 tracks (matches an independent Python check); the first run
 reads fine prints for ~1,200 candidates in ~17 s, later runs reuse them.
 Not click-tested in the app.
 
+### 78. YouTube import matcher: featuring, edit lengths, artist disagreement — v0.23.1
+
+**Released as v0.23.1.**
+
+**What/why.** Matching fixes from real playlist runs (`src/lib/ytMatch.ts`),
+written in an earlier session and committed as f22bbd4.
+
+**How.**
+- `stripFeaturing`: featured-artist credits ("(feat. X & Y)", "[ft. X]", a
+  trailing "feat. X") are dropped from both sides' title for the title
+  comparison only. 1nonly "DANCE! (feat. Ciscaux & Wassup Rocker)" vs a file
+  tagged "Dance" had fallen to 81%, under auto-accept.
+- `applyDuration`: a gap over 25 s used to cap every candidate at 0.45, below
+  the confirm bar; now ×0.8 up to 60 s and ×0.7 beyond, so radio edits and
+  short remixes are still offered but can never auto-accept.
+- `artistAgreement` (better of similarity and word containment, so
+  collaboration credits agree) drives an `ARTIST_MISMATCH_FACTOR` 0.7 penalty
+  when real YouTube Music artist metadata contradicts the file's artist
+  ("Justice Dance" no longer beats Lady Gaga "Just Dance").
+- Same artist, different song: when both titles are known and disagree, the
+  structured score (title 0.62, artist 0.38) caps the flat one ("The Time" no
+  longer takes "I Gotta Feeling").
+
+**Verification.** Four new vitest cases in `ytMatch.test.ts`; full suite 441.
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —
