@@ -12,6 +12,12 @@ requests mean this one.
 - `npm run tauri dev` — the only way to see the UI. **The app does not run in a
   plain browser** (every Tauri `invoke` throws), so don't try `npm run dev` + a
   browser to verify UI.
+- `npm run install:local` (`-- -Force` closes a running app, `-- -BuildOnly`
+  skips installing) — builds an NSIS installer with the `release-fast` Cargo
+  profile (no LTO, 16 codegen units) and installs it silently over the owner's
+  per-user install. ~60 s after a code change (~8 min cold). For trying a
+  change in the real app; unsigned for the updater, never upload it. The full
+  `release` profile (LTO, 1 codegen unit) takes ~11 min cold.
 - Release: push a `v*` tag → `.github/workflows/release.yml` builds + signs all
   three platforms into a **draft** release (~14 min) that is published by hand.
   Bump version in `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`.

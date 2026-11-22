@@ -76,6 +76,16 @@ strip = true
 lto = true
 codegen-units = 1
 
+# Local test installs (`npm run install:local`). Same optimisation level as
+# release, minus the whole-program pass (lto + one codegen unit), which runs
+# on a single core and is most of a release build's time. Never used by CI:
+# published builds stay on [profile.release].
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+
 # SQLCipher's 256,000-iteration PBKDF2 is far too slow unoptimised; keep just
 # the crypto crates optimised in dev/test builds.
 [profile.dev.package.sha2]
