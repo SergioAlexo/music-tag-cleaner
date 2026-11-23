@@ -266,6 +266,8 @@ interface Props {
   fieldNaming: "friendly" | "raw" | "both";
   rowHeight: RowHeight;
   genreOptions: string[];
+  /** Album vocabulary from the library, A-Z numeric (see `libraryAlbumNames`). */
+  albumOptions: string[];
   onToggle: (path: string) => void;
   onSetAll: (checked: boolean) => void;
   onSetMany: (paths: string[], checked: boolean) => void;
@@ -278,6 +280,7 @@ interface Props {
   onInspect: (file: AudioFile) => void;
   onAddGenre: (genre: string) => void;
   onRenameGenre: (oldName: string, newName: string) => void;
+  onRenameAlbum: (oldName: string, newName: string) => void;
   /** Confirms with the user, then moves the file to the Recycle Bin.
    * `onConfirmed` fires after the user says yes and before the file moves —
    * Genre Mode uses it to advance playback off the track being deleted. */
@@ -473,6 +476,7 @@ export function TrackTable({
   fieldNaming,
   rowHeight,
   genreOptions,
+  albumOptions,
   onToggle,
   onSetAll,
   onSetMany,
@@ -485,6 +489,7 @@ export function TrackTable({
   onInspect,
   onAddGenre,
   onRenameGenre,
+  onRenameAlbum,
   onDeleteFile,
   onRenameFile,
   onConvertFile,
@@ -804,6 +809,18 @@ export function TrackTable({
             ).finally(() => {
               gmDeletingRef.current = false;
             });
+            return;
+          }
+          // Shift+1-9 quick-tags the Album (set position: "1 Warm up",
+          // "2 Start"…). Reads `e.code`, because with Shift held `e.key` is
+          // the layout's symbol ("!", "@") rather than the digit. It does not
+          // advance: set position is usually tagged alongside the genre, so
+          // the row stays put until the genre key moves on.
+          if (e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && /^Digit[1-9]$/.test(e.code)) {
+            e.preventDefault();
+            const { albumOptions: liveAlbums, onEditField: liveOnEditField } = gmActionsRef.current;
+            const album = liveAlbums[Number(e.code.slice(5)) - 1];
+            if (album) liveOnEditField([currentPath], "album", album);
             return;
           }
           if (/^[1-9]$/.test(e.key)) {
@@ -1442,6 +1459,7 @@ export function TrackTable({
   const gmActionsRef = useRef({
     tags,
     genreOptions,
+    albumOptions,
     onEditField,
     onTrack,
     beginEdit,
@@ -1451,6 +1469,7 @@ export function TrackTable({
   gmActionsRef.current = {
     tags,
     genreOptions,
+    albumOptions,
     onEditField,
     onTrack,
     beginEdit,
@@ -1661,7 +1680,7 @@ export function TrackTable({
             variant={genreMode ? "default" : "ghost"}
             size="sm"
             onClick={toggleGenreMode}
-            title="Genre Mode — keyboard-driven genre assignment: ↑↓ move, Enter play/tag, ←→ seek, 1-9 quick-tag, Esc exit"
+            title="Genre Mode — keyboard-driven genre assignment: ↑↓ move, Enter play/tag, ←→ seek, 1-9 genre, Shift+1-9 album, Esc exit"
           >
             <Headphones />
             Genre Mode
@@ -2230,6 +2249,16 @@ export function TrackTable({
                               onCreate={onAddGenre}
                               onEditOption={onRenameGenre}
                             />
+                          ) : isEditing && c.field === "album" ? (
+                            <Combobox
+                              value={draft}
+                              options={albumOptions}
+                              allowCustom
+                              autoFocus
+                              onChange={(v) => commitEdit(v)}
+                              onClose={() => setEditing(null)}
+                              onEditOption={onRenameAlbum}
+                            />
                           ) : isEditing ? (
                             <div className="flex items-center gap-1">
                               <input
@@ -2368,12 +2397,15 @@ export function TrackTable({
                   <span className="shrink-0 text-muted-foreground">
                     Genre: <span className="font-medium text-foreground">{tags[currentFile.path]?.genre || "—"}</span>
                   </span>
+                  <span className="shrink-0 text-muted-foreground">
+                    Album: <span className="font-medium text-foreground">{tags[currentFile.path]?.album || "—"}</span>
+                  </span>
                 </>
               );
             })()}
             <span className="ml-auto shrink-0 text-muted-foreground">
               ↑↓ move · Enter play / tag · ←→ seek {GM_SEEK_SECONDS}s · click waveform to drop the needle · 1–9
-              quick-tag · Space play/pause · Del delete · Esc exit
+              genre · Shift+1–9 album · Space play/pause · Del delete · Esc exit
             </span>
             <Button variant="ghost" size="sm" onClick={toggleGenreMode}>
               Exit

@@ -176,6 +176,9 @@ interface Props {
   /** Genre vocabulary derived from the indexed library (see lib/genres.ts). */
   genreOptions: string[];
   onRenameGenre: (oldName: string, newName: string) => void;
+  /** Album vocabulary (set-position labels), A-Z numeric — see `libraryAlbumNames`. */
+  albumOptions: string[];
+  onRenameAlbum: (oldName: string, newName: string) => void;
   onBackup: () => void;
   onRestore: () => void;
   onBackupArchive: () => void;
@@ -272,6 +275,8 @@ export function LibraryPage({
   onAddGenre,
   genreOptions,
   onRenameGenre,
+  albumOptions,
+  onRenameAlbum,
   onBackup,
   onRestore,
   onBackupArchive,
@@ -943,6 +948,7 @@ export function LibraryPage({
               fieldNaming={settings.fieldNaming}
               rowHeight={settings.rowHeight}
               genreOptions={genreOptions}
+              albumOptions={albumOptions}
               onToggle={filesApi.toggle}
               onSetAll={filesApi.setAll}
               onSetMany={filesApi.setManySelected}
@@ -955,6 +961,7 @@ export function LibraryPage({
               onInspect={onInspect}
               onAddGenre={onAddGenre}
               onRenameGenre={onRenameGenre}
+              onRenameAlbum={onRenameAlbum}
               onConvertFile={onConvertFile}
               onFindArtwork={onFindArtwork}
               onCopyArtwork={onCopyArtwork}

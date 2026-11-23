@@ -142,6 +142,34 @@ export function tallyFacet(
   return [...counts.values()];
 }
 
+/**
+ * The album picker's vocabulary: every album name the index knows plus the
+ * ones on loaded tracks, **one entry per name** (the sidebar splits albums by
+ * album artist; a picker value doesn't care who else uses it).
+ *
+ * Sorted A-Z with numeric collation rather than by count like genres: the
+ * owner uses Album for set position ("1 Warm up", "2 Start", "3 Peak"), so the
+ * list — and Genre Mode's Shift+1-9 quick-tag, which indexes into it — has to
+ * follow the numbers, not whichever bucket happens to be biggest.
+ */
+export function libraryAlbumNames(
+  indexed: FacetCount[],
+  loadedTags: Record<string, TagData>,
+): string[] {
+  const names = new Set<string>();
+  for (const a of indexed) {
+    const name = a.name.trim();
+    if (name) names.add(name);
+  }
+  for (const t of Object.values(loadedTags)) {
+    const name = t.album?.trim();
+    if (name) names.add(name);
+  }
+  return [...names].sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: "base", numeric: true }),
+  );
+}
+
 /** Whether a track's tags fall in `pick`'s bucket: the in-memory twin of the SQL in `facet_paths`. */
 export function matchesFacet(tag: TagData | undefined, pick: FacetPick): boolean {
   const meta = FACETS[pick.facet];

@@ -3,6 +3,7 @@ import type { TagData } from "../types";
 import {
   arrangeFacet,
   facetLabel,
+  libraryAlbumNames,
   matchesFacet,
   samePick,
   tallyFacet,
@@ -11,6 +12,14 @@ import {
 
 const tag = (p: Partial<TagData>): TagData => ({ hasCoverArt: false, allFields: {}, ...p });
 const fc = (name: string, artist: string, count: number): FacetCount => ({ name, artist, count });
+
+describe("libraryAlbumNames", () => {
+  it("dedupes across album artists, skips the none bucket, sorts by set-position number", () => {
+    const indexed = [fc("3 Peak", "A", 40), fc("3 Peak", "B", 2), fc("", "", 900), fc("10 Encore", "", 1), fc("1 Warm up", "", 3)];
+    const names = libraryAlbumNames(indexed, { "x.mp3": tag({ album: " 2 Start " }), "y.mp3": tag({ album: "  " }) });
+    expect(names).toEqual(["1 Warm up", "2 Start", "3 Peak", "10 Encore"]);
+  });
+});
 
 describe("arrangeFacet", () => {
   const list = [fc("House", "", 3), fc("", "", 7), fc("Techno", "", 10), fc("Ambient", "", 3)];

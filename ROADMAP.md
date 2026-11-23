@@ -3057,6 +3057,29 @@ effort 17/20. Some extra years are guesses (Wellboy "Гуси" → 2019, likely
 the new wording; `print_year_prompt` gained `MTC_TRACKS_IN` / `MTC_FIELDS`
 for running real tracks.
 
+### 80. Album picker + Shift+1-9 album quick-tag (set position) — v0.23.3
+
+**Released as v0.23.3.**
+
+**What/why.** The owner sorts by Genre into playlists and wants Album as a
+set-position label inside them ("1 Warm up", "2 Start", "3 Peak") — so Album
+needed the genre tooling: a picker in the cell, a vocabulary drawn from the
+library, rename-everywhere from the picker, and quick-tag in Genre Mode.
+
+**How.** `libraryAlbumNames` (`lib/facets.ts`) merges indexed album facets
+with loaded tags, one entry per name across album artists, sorted A-Z with
+numeric collation (not by count like genres) so the list and Shift+N follow
+the set-position numbers. The Album cell edits through the same `Combobox` as
+Genre; its pencil renames via `renameFacetEverywhere(..., null)`, where
+`null` means every album artist (the sidebar's rename still narrows to one).
+Genre Mode: Shift+1-9 writes `albumOptions[N-1]` (read from `e.code`, since
+Shift turns `e.key` into "!" etc.) and does not advance; the strip shows the
+current Album. The sidebar Albums tab already existed (facets).
+
+**Verification.** `tsc` clean, vitest 442 pass incl. a new
+`libraryAlbumNames` test (dedupe across artists, "10 Encore" after "3 Peak").
+Not yet tried in the installed app.
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —

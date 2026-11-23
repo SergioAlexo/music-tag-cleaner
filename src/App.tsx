@@ -39,7 +39,7 @@ import { describeRefresh, refreshChangedAnything } from "./lib/libraryRefresh";
 import { buildLanguagePreview, normalizeLanguageCode, type LangSuggestion } from "./lib/language";
 import { describeLyricsTally, tallyLyrics, type LyricsResult } from "./lib/lyrics";
 import { LyricsPanel } from "./components/LyricsPanel";
-import { FACETS, matchesFacet, type Facet, type FacetPick } from "./lib/facets";
+import { FACETS, libraryAlbumNames, matchesFacet, type Facet, type FacetPick } from "./lib/facets";
 import { useSessionTabs } from "./hooks/useSessionTabs";
 import {
   applyCapitalization,
@@ -357,6 +357,12 @@ export default function App() {
   const genreOptions = useMemo(
     () => libraryGenreNames(libraryIndex.genres, libraryTags),
     [libraryIndex.genres, libraryTags],
+  );
+
+  /** The album vocabulary, same idea as genres — see `libraryAlbumNames`. */
+  const albumOptions = useMemo(
+    () => libraryAlbumNames(libraryIndex.facets.album, libraryTags),
+    [libraryIndex.facets.album, libraryTags],
   );
 
   // Feeds Settings > Genres > "Detect genres" — every distinct genre spelling
@@ -2362,23 +2368,41 @@ export default function App() {
    * rows; loaded tracks go through the normal edit path so undo still covers
    * them.
    */
-  const renameFacetEverywhere = async (facet: Facet, oldName: string, newName: string, artist = "") => {
+  const renameFacetEverywhere = async (
+    facet: Facet,
+    oldName: string,
+    newName: string,
+    /** Album artist to narrow to; `null` = every album artist (the album picker,
+     * where "3 Peak" is one value no matter whose tracks carry it). */
+    artist: string | null = "",
+  ) => {
     const meta = FACETS[facet];
     // Renaming a language to a name or two-letter code stores the canonical code.
     const trimmed = facet === "language" ? (normalizeLanguageCode(newName) ?? newName.trim()) : newName.trim();
     if (!trimmed || trimmed === oldName) return;
-    const pick: FacetPick = { facet, name: oldName, artist };
+    const anyArtist = artist === null && meta.byAlbumArtist;
+    const pick: FacetPick = { facet, name: oldName, artist: artist ?? "" };
 
     let paths: string[] = [];
     try {
-      paths = await libraryIndex.pathsWithFacet(facet, oldName, artist);
+      if (anyArtist) {
+        const artists = libraryIndex.facets[facet]
+          .filter((f) => f.name === oldName)
+          .map((f) => f.artist);
+        const lists = await Promise.all(
+          artists.map((a) => libraryIndex.pathsWithFacet(facet, oldName, a)),
+        );
+        paths = lists.flat();
+      } else {
+        paths = await libraryIndex.pathsWithFacet(facet, oldName, artist ?? "");
+      }
     } catch {
       paths = [];
     }
     // Loaded-but-not-yet-indexed tracks matter too — they're the ones most
     // likely to have just been given this value by hand.
     const loaded = Object.entries(libraryTags)
-      .filter(([, t]) => matchesFacet(t, pick))
+      .filter(([, t]) => (anyArtist ? (t[meta.tagKey] ?? "") === oldName : matchesFacet(t, pick)))
       .map(([path]) => path);
     const all = [...new Set([...paths, ...loaded])];
     const what = artist ? `"${oldName}" (${artist})` : `"${oldName}"`;
@@ -2441,6 +2465,8 @@ This rewrites the ${meta.singular} tag on ${
   };
   const renameGenreEverywhere = (oldName: string, newName: string) =>
     renameFacetEverywhere("genre", oldName, newName);
+  const renameAlbumEverywhere = (oldName: string, newName: string) =>
+    renameFacetEverywhere("album", oldName, newName, null);
 
   /**
    * Detect Genres found several raw spellings that normalize to the same
@@ -2693,6 +2719,8 @@ This rewrites the ${meta.singular} tag on ${
               onAddGenre={noteNewGenre}
               onRenameGenre={renameGenreEverywhere}
               genreOptions={genreOptions}
+              albumOptions={albumOptions}
+              onRenameAlbum={renameAlbumEverywhere}
               onBackup={withTrack("backup", runBackup)}
               onRestore={withTrack("restore", restoreBackup)}
               onBackupArchive={withTrack("backupArchive", runBackupArchive)}
