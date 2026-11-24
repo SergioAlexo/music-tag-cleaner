@@ -6,9 +6,11 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   AlertTriangle,
+  ArrowLeft,
   Ban,
   Check,
   ClipboardCopy,
+  Copy,
   Database,
   Download,
   ExternalLink,
@@ -17,11 +19,14 @@ import {
   Link2,
   ListMusic,
   Loader2,
+  Plus,
   RefreshCw,
   RotateCcw,
   Save,
   Search,
-  Trash2,
+  Sparkles,
+  Square,
+  Undo2,
   X,
 } from "lucide-react";
 import type {
@@ -40,6 +45,7 @@ import type {
 import { AudioPreview } from "../components/AudioPreview";
 import { YouTubePreview } from "../components/YouTubePreview";
 import { AiPlaylistBuilder } from "../components/AiPlaylistBuilder";
+import { OrganizeListDialog } from "../components/OrganizeListDialog";
 import {
   AMBIGUOUS_THRESHOLD,
   buildWanted,
@@ -50,6 +56,20 @@ import {
 } from "../lib/ytMatch";
 import { buildMatchLog, matchLogToMarkdown, type DecisionState } from "../lib/ytMatchLog";
 import { parseImportInput, shortHash } from "../lib/ytListInput";
+import { linkLooksRight, runLimited, type FoundLink } from "../lib/ytLinks";
+import {
+  contentKeyFor,
+  emptyPayload,
+  findSameList,
+  freshName,
+  hasDecisions,
+  keepDecisions,
+  newSessionKey,
+  openSessions,
+  parsePayload,
+  type SessionPayload,
+} from "../lib/ytSessions";
+import { ImportSessionsLanding, SessionNameInput } from "../components/ImportSessionsLanding";
 import { buildM3u8, buildRekordboxPlaylistXml } from "../lib/rekordboxExport";
 import { Button, Card, CardHeader, cn } from "../components/ui";
 import { LibrarySearchPanel, type RowVariants } from "../components/LibrarySearchPanel";
@@ -59,45 +79,10 @@ function sanitizeFilenamePart(s: string): string {
   return s.replace(/[\\/:*?"<>|]+/g, " ").trim() || "playlist";
 }
 
-/**
- * Everything about one import run that is worth surviving the app closing.
- *
- * Matching a playlist is rarely a single sitting: you match what you own, go
- * and buy the rest, and come back days later to re-fetch. Without this, that
- * second pass starts from nothing — every confirmation and, worse, every
- * *denial* is lost, so the matcher cheerfully re-proposes exactly the matches
- * already rejected.
- *
- * Decisions are keyed by video id, never by position, so they survive the
- * playlist gaining, losing or reordering tracks, and they survive the library
- * growing — which is the whole reason to come back.
- */
-interface SessionPayload {
-  version: 1;
-  entries: PlaylistEntry[];
-  overrides: Record<string, string>;
-  denied: Record<string, string[]>;
-  candIndex: Record<string, number>;
-  fromSearch: Record<string, boolean>;
-  /** The raw text pasted into the import box that produced `entries` —
-   * absent on a session saved before list-import shipped (C5), in which
-   * case the textarea falls back to the single playlist URL. Lets Re-match
-   * and re-fetch work for a mixed playlist/video/text-line import, and
-   * refills the textarea on restore. */
-  sourceText?: string;
-}
-
-/**
- * Stable identity for a playlist. The `list=` id is the same across
- * `music.youtube.com` and `youtube.com` and survives extra query params, so
- * a session saved from one link is found again from the other.
- */
-export function sessionKeyFor(url: string): string {
-  const m = url.match(/[?&]list=([^&]+)/i);
-  if (m) return `list:${m[1]}`;
-  const v = url.match(/[?&]v=([^&]+)/i);
-  if (v) return `video:${v[1]}`;
-  return `url:${url.trim()}`;
+/** "Artist - Title" as shown on a row, for the clipboard. */
+function entryName(entry: PlaylistEntry): string {
+  const w = buildWanted(entry);
+  return w.artist ? `${w.artist} - ${w.title}` : w.title;
 }
 
 type EffectiveStatus = "matched" | "ambiguous" | "missing";
@@ -130,6 +115,55 @@ function StatusBadge({ status, score }: { status: EffectiveStatus; score?: numbe
   );
 }
 
+/** What the link search found for a typed song — shown, not just linked, so a
+ * wrong result is visible before it is copied. */
+function FoundLinkLine({
+  typed,
+  link,
+  onCopy,
+  onRemove,
+}: {
+  typed: string;
+  link: FoundLink;
+  onCopy: () => void;
+  onRemove: () => void;
+}) {
+  const right = linkLooksRight(typed, link);
+  const label = [link.title, link.artists.join(", ")].filter(Boolean).join(" • ");
+  return (
+    <div
+      className={cn(
+        "flex min-w-0 items-center gap-1.5 text-xs",
+        right ? "text-muted-foreground" : "text-amber-600 dark:text-amber-400",
+      )}
+    >
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onCopy();
+        }}
+        className="shrink-0 hover:text-primary"
+        title={`Copy ${link.url}`}
+      >
+        <Link2 className="h-3 w-3" />
+      </button>
+      <span className="truncate" title={label}>
+        {right ? label : `Check: ${label}`}
+      </span>
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onRemove();
+        }}
+        className="shrink-0 hover:text-destructive"
+        title="Wrong song — remove this link"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </div>
+  );
+}
+
 export function YtMusicImportPage({
   files,
   tags,
@@ -140,6 +174,7 @@ export function YtMusicImportPage({
   libraryGenres,
   settings,
   notify,
+  generate,
   onInspect,
   indexing,
   lastIndexedAt,
@@ -158,6 +193,8 @@ export function YtMusicImportPage({
   libraryGenres: GenreCount[];
   settings: Settings;
   notify: Notify;
+  /** One prompt through the configured AI backend (useAI.generateText). */
+  generate: (prompt: string) => Promise<string>;
   onInspect: (path: string) => void;
   /** Whether a whole-library index run is currently in progress. */
   indexing: boolean;
@@ -182,13 +219,26 @@ export function YtMusicImportPage({
   /** The multi-line import box: a playlist URL, video links, and/or typed
    * song names, one per line — see `parseImportInput`. */
   const [sourceText, setSourceText] = useState("");
-  const [fetching, setFetching] = useState(false);
+  /** Sessions with a fetch running — not just the one on screen. */
+  const [fetchingKeys, setFetchingKeys] = useState<string[]>(() => [...openSessions.inFlight.keys()]);
   const [playlist, setPlaylist] = useState<PlaylistFetchResult | null>(null);
   const [fetchedUrl, setFetchedUrl] = useState("");
-  /** The saved-session key for the current playlist — a single playlist
-   * URL uses `sessionKeyFor` unchanged (C5: existing sessions must restore
-   * the same way they always did); a mixed/list import hashes the input. */
+  /** The session on screen; null is the landing page. */
   const [importKey, setImportKey] = useState<string | null>(null);
+  const fetching = !!importKey && fetchingKeys.includes(importKey);
+  const [sessionName, setSessionName] = useState("");
+  const [named, setNamed] = useState(false);
+  const contentKeyRef = useRef<string | undefined>(undefined);
+  const statsRef = useRef<SessionPayload["stats"]>(undefined);
+  /** Every saved session, newest first; null until the first load. */
+  const [sessions, setSessions] = useState<ImportSessionSummary[] | null>(null);
+  const [openKeys, setOpenKeys] = useState<string[]>(openSessions.keys);
+  /** YouTube Music links found for typed songs, by entry id. Apart from
+   * `playlist` on purpose: they arrive one by one and changing the playlist
+   * re-runs the whole match. */
+  const [links, setLinks] = useState<Record<string, FoundLink>>({});
+  const [linkProgress, setLinkProgress] = useState<{ done: number; total: number } | null>(null);
+  const linkRunRef = useRef<{ cancelled: boolean } | null>(null);
   /** The exact text that produced the current `playlist`, for persistence —
    * kept separate from the live `sourceText` so editing the box afterward
    * without re-fetching can never desync what gets saved. */
@@ -207,8 +257,13 @@ export function YtMusicImportPage({
   /** videoIds whose match was picked by hand in the search dock. */
   const [fromSearch, setFromSearch] = useState<Record<string, boolean>>({});
   const [focusedId, setFocusedId] = useState<string | null>(null);
-  /** The saved session this run was resumed from, if any. */
-  const [resumedFrom, setResumedFrom] = useState<ImportSession | null>(null);
+  /** videoIds ticked for copying — nothing to do with match decisions. */
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  /** The last ticked row, where a Shift+click range starts. */
+  const pickAnchorRef = useRef<string | null>(null);
+  const [organizing, setOrganizing] = useState(false);
+  /** The box's text before the AI's list replaced it, for Undo. */
+  const [beforeOrganize, setBeforeOrganize] = useState<string | null>(null);
   const [rematching, setRematching] = useState(false);
   /** `{done, total}` while `enrich_ytmusic_entries` is fetching real YouTube
    * Music metadata for the current playlist; null when nothing is running. */
@@ -273,47 +328,214 @@ export function YtMusicImportPage({
   }, [trackLabel]);
 
 
-  /**
-   * Restores the most recent import session when the page mounts.
-   *
-   * Page state is component-local, so switching to Settings — which is
-   * exactly where you go to index your library mid-session — used to throw
-   * the fetched playlist away and leave you re-pasting the URL. The saved
-   * session already carries the entries, so this rebuilds the whole screen
-   * with no network call at all; matching re-runs from the effect below.
-   */
-  const restoredRef = useRef(false);
-  useEffect(() => {
-    if (restoredRef.current) return;
-    restoredRef.current = true;
-    void (async () => {
-      try {
-        const sessions = await invoke<ImportSessionSummary[]>("list_import_sessions");
-        const latest = sessions[0];
-        if (!latest) return;
-        const saved = await invoke<ImportSession | null>("load_import_session", {
-          key: latest.key,
-        });
-        if (!saved) return;
-        const payload = JSON.parse(saved.payload) as SessionPayload;
-        if (!payload.entries?.length) return;
-        const text = payload.sourceText ?? saved.url;
-        setPlaylist({ title: saved.title, entries: payload.entries });
-        setFetchedUrl(saved.url);
-        setSourceText(text);
-        importedTextRef.current = text;
-        setImportKey(saved.key);
-        setOverrides(payload.overrides ?? {});
-        setDenied(payload.denied ?? {});
-        setCandIndex(payload.candIndex ?? {});
-        setFromSearch(payload.fromSearch ?? {});
-        setResumedFrom(saved);
-        const enrichable = payload.entries.filter((e) => e.source !== "text").map((e) => e.videoId);
-        if (enrichable.length) void runEnrichment(enrichable);
-      } catch {
-        // Nothing to restore is the normal case on a first run.
+  // --- Sessions -------------------------------------------------------------
+  const mountedRef = useRef(true);
+  /** The key of the session loaded on screen, readable from async code. */
+  const shownKeyRef = useRef<string | null>(null);
+
+  const refreshSessions = async () => {
+    try {
+      await openSessions.pendingSave;
+      const list = await invoke<ImportSessionSummary[]>("list_import_sessions");
+      if (mountedRef.current) setSessions(list);
+    } catch (e) {
+      notify(String(e), "error");
+      if (mountedRef.current) setSessions((prev) => prev ?? []);
+    }
+  };
+
+  const setTabs = (keys: string[]) => {
+    openSessions.keys = keys;
+    setOpenKeys(keys);
+  };
+
+  /** Puts one session's contents (or nothing) on screen. */
+  const show = (key: string | null, title = "", url = "", payload: SessionPayload = emptyPayload(), keepBox = false) => {
+    enrichRunRef.current?.cancel();
+    enrichRunRef.current = null;
+    setEnrichProgress(null);
+    stopLinks();
+    shownKeyRef.current = key;
+    setImportKey(key);
+    setSessionName(title);
+    setNamed(!!payload.named);
+    contentKeyRef.current = payload.contentKey;
+    statsRef.current = payload.stats;
+    // The previous session's matches must not be shown, or counted into this
+    // one's stats, for the render before the matcher runs.
+    setMatches(null);
+    setPlaylist(payload.entries.length ? { title, entries: payload.entries } : null);
+    setFetchedUrl(url);
+    importedTextRef.current = payload.sourceText ?? url;
+    if (!keepBox) {
+      setSourceText(payload.draft ?? payload.sourceText ?? url);
+      setBeforeOrganize(null);
+      setOrganizing(false);
+    }
+    setOverrides(payload.overrides);
+    setDenied(payload.denied);
+    setCandIndex(payload.candIndex);
+    setFromSearch(payload.fromSearch);
+    setLinks(payload.links ?? {});
+    setFocusedId(null);
+    setPicked(new Set());
+    pickAnchorRef.current = null;
+    const enrichable = payload.entries.filter((e) => e.source !== "text").map((e) => e.videoId);
+    if (enrichable.length) void runEnrichment(enrichable);
+  };
+
+  /** Loads a session from the database onto the screen, unless the user has
+   * moved on to another one in the meantime. */
+  const loadInto = async (key: string, keepBox = false) => {
+    const stillWanted = () => mountedRef.current && openSessions.activeKey === key;
+    try {
+      await openSessions.pendingSave;
+      const saved = await invoke<ImportSession | null>("load_import_session", { key });
+      if (!stillWanted()) return;
+      const payload = saved && parsePayload(saved.payload);
+      if (!saved || !payload) {
+        notify(saved ? "That import could not be read" : "That import no longer exists", "error");
+        openSessions.activeKey = null;
+        setTabs(openSessions.keys.filter((k) => k !== key));
+        show(null);
+        void refreshSessions();
+        return;
       }
-    })();
+      show(key, saved.title, saved.url, payload, keepBox);
+    } catch (e) {
+      if (!stillWanted()) return;
+      notify(String(e), "error");
+      openSessions.activeKey = null;
+      show(null);
+    }
+  };
+
+  /** Saves what is on screen before something else takes its place. A session
+   * nothing was ever put into is dropped instead of piling up in the list. */
+  const leave = async () => {
+    const key = shownKeyRef.current;
+    if (!key) return;
+    if (!playlist && !named && !sourceText.trim() && !openSessions.inFlight.has(key)) {
+      setTabs(openSessions.keys.filter((k) => k !== key));
+      // Nothing may save it again after this, or it would come back.
+      shownKeyRef.current = null;
+      await invoke("delete_import_session", { key }).catch(() => {});
+      return;
+    }
+    await persist(true);
+  };
+
+  const openSession = async (key: string) => {
+    if (shownKeyRef.current === key) {
+      // Also cancels a load of another session that hasn't landed yet.
+      openSessions.activeKey = key;
+      return;
+    }
+    await leave();
+    openSessions.activeKey = key;
+    if (!openSessions.keys.includes(key)) setTabs([...openSessions.keys, key]);
+    await loadInto(key);
+    void refreshSessions();
+    followFetch(key);
+  };
+
+  /** Shows the result when a fetch that was already running for `key` ends
+   * (started before this session, or this page, was left). */
+  const followFetch = (key: string) => {
+    const running = openSessions.inFlight.get(key);
+    if (!running) return;
+    void running.then(() => {
+      if (!mountedRef.current) return;
+      setFetchingKeys((prev) => prev.filter((k) => k !== key));
+      if (openSessions.activeKey === key) void loadInto(key, true);
+    });
+  };
+
+  const goHome = async () => {
+    await leave();
+    openSessions.activeKey = null;
+    show(null);
+    await refreshSessions();
+  };
+
+  const createSession = async () => {
+    await leave();
+    const key = newSessionKey();
+    try {
+      await openSessions.pendingSave;
+      const taken = await invoke<ImportSessionSummary[]>("list_import_sessions");
+      const title = freshName(taken);
+      await invoke("save_import_session", { key, title, url: "", payload: JSON.stringify(emptyPayload()) });
+      openSessions.activeKey = key;
+      setTabs([...openSessions.keys, key]);
+      show(key, title);
+      void refreshSessions();
+    } catch (e) {
+      notify(String(e), "error");
+    }
+  };
+
+  const closeTab = async (key: string) => {
+    if (openSessions.activeKey === key) {
+      const i = openSessions.keys.indexOf(key);
+      const next = openSessions.keys[i + 1] ?? openSessions.keys[i - 1];
+      if (next) await openSession(next);
+      else await goHome();
+    }
+    setTabs(openSessions.keys.filter((k) => k !== key));
+  };
+
+  const renameSession = async (key: string, title: string) => {
+    if (shownKeyRef.current === key) {
+      setSessionName(title);
+      setNamed(true);
+    }
+    try {
+      await openSessions.pendingSave;
+      await invoke("rename_import_session", { key, title });
+    } catch (e) {
+      notify(String(e), "error");
+    }
+    void refreshSessions();
+  };
+
+  const deleteSession = async (key: string) => {
+    if (openSessions.activeKey === key) {
+      shownKeyRef.current = null;
+      openSessions.activeKey = null;
+      show(null);
+    }
+    setTabs(openSessions.keys.filter((k) => k !== key));
+    try {
+      // A save still on its way would bring the row back.
+      await openSessions.pendingSave;
+      await invoke("delete_import_session", { key });
+      notify("Import deleted", "info");
+    } catch (e) {
+      notify(String(e), "error");
+    }
+    void refreshSessions();
+  };
+
+  // Page state is component-local, so a trip to Settings — which is exactly
+  // where you go to index your library mid-session — unmounts all of it. The
+  // session that was on screen comes back from the database, with no network
+  // call at all. A fresh app run starts on the landing page.
+  useEffect(() => {
+    mountedRef.current = true;
+    const key = openSessions.activeKey;
+    if (key) {
+      void loadInto(key);
+      followFetch(key);
+    }
+    for (const k of openSessions.inFlight.keys()) if (k !== key) followFetch(k);
+    void refreshSessions();
+    return () => {
+      mountedRef.current = false;
+      stopLinks();
+      // The autosave timer dies with the page, so the last change goes now.
+      void persistRef.current();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -469,30 +691,26 @@ export function YtMusicImportPage({
    * track), and a typed song name as a text entry that only ever goes
    * through the matcher — never YouTube (see `ParsedImportItem`).
    *
-   * A single playlist URL and nothing else — the original, pre-C behavior —
-   * keeps the exact same session key (`sessionKeyFor`) so a session saved
-   * before this feature shipped restores unchanged (C5). Anything else gets
-   * a `list:`-prefixed key hashed from the input text.
+   * The result goes to the session in the database first and to the screen
+   * only if that session is still the one shown, so a slow fetch can be left
+   * running while working in another session. Decisions about entries the new
+   * list still has are kept.
    */
-  const runImport = async () => {
-    const trimmed = sourceText.trim();
-    if (!trimmed) return;
-    setFetching(true);
-    setPlaylist(null);
-    setMatches(null);
-    setResumedFrom(null);
-    setOverrides({});
-    setDenied({});
-    setCandIndex({});
-    setFromSearch({});
+  const runImport = async (text = sourceText) => {
+    const trimmed = text.trim();
+    const key = importKey;
+    if (!trimmed || !key || openSessions.inFlight.has(key)) return;
+    const items = parseImportInput(trimmed);
+    if (!items.length) {
+      notify("Nothing to import — paste a link, playlist URL, or song names", "info");
+      return;
+    }
     const fetchStarted = Date.now();
-    try {
-      const items = parseImportInput(trimmed);
-      if (!items.length) {
-        notify("Nothing to import — paste a link, playlist URL, or song names", "info");
-        return;
-      }
+    await persist(true, text);
+    // A second click landed while that was saving.
+    if (openSessions.inFlight.has(key)) return;
 
+    const job = async () => {
       let title = "";
       let firstPlaylistUrl = "";
       const entries: PlaylistEntry[] = [];
@@ -523,24 +741,55 @@ export function YtMusicImportPage({
 
       if (!entries.length) throw new Error("Nothing recognizable to import — check the pasted text");
 
-      // A lone playlist or video link — the original, pre-list-import
-      // behavior — keeps the exact same key `sessionKeyFor` always produced
-      // for it, so a session saved before this feature shipped is still
-      // found (C5). Anything else (a mix, several links, or typed text) is
-      // new territory and gets a key hashed from the whole input.
       const singleUrlItem =
         items.length === 1 && (items[0].kind === "playlist" || items[0].kind === "video") ? items[0] : null;
       if (!title) title = `Pasted list (${entries.length} track${entries.length === 1 ? "" : "s"})`;
-      const key = singleUrlItem ? sessionKeyFor(singleUrlItem.url) : `list:${shortHash(trimmed)}`;
+      const contentKey = singleUrlItem ? contentKeyFor(singleUrlItem.url) : `list:${shortHash(trimmed)}`;
 
-      setPlaylist({ title, entries });
-      setFetchedUrl(singleUrlItem?.url ?? firstPlaylistUrl);
-      setImportKey(key);
-      importedTextRef.current = trimmed;
+      // Read back rather than captured at the start: the session may have
+      // been renamed, or deleted, while this was fetching.
+      await openSessions.pendingSave;
+      const current = await invoke<ImportSession | null>("load_import_session", { key });
+      const before = current && parsePayload(current.payload);
+      if (!current || !before) return;
 
-      // Matching is driven by the effect above, so it happens here too.
+      let decisions = keepDecisions(before, seen);
+      let resumed = 0;
+      let resumedFrom = "";
+      if (!before.entries.length && !hasDecisions(decisions)) {
+        // The same list matched in an earlier session: start from the
+        // decisions made there. The matcher re-runs against the (possibly
+        // larger) collection underneath them.
+        const all = await invoke<ImportSessionSummary[]>("list_import_sessions");
+        const same = findSameList(all, contentKey, key);
+        const saved = same && (await invoke<ImportSession | null>("load_import_session", { key: same.key }));
+        const earlier = saved && parsePayload(saved.payload);
+        if (saved && earlier) {
+          decisions = keepDecisions(earlier, seen);
+          resumed = Object.keys(decisions.overrides).length;
+          resumedFrom = saved.title;
+        }
+      }
+
+      const payload: SessionPayload = {
+        ...before,
+        ...decisions,
+        entries,
+        sourceText: trimmed,
+        draft: undefined,
+        contentKey,
+        stats: undefined,
+        links: Object.fromEntries(Object.entries(before.links ?? {}).filter(([id]) => seen.has(id))),
+      };
+      await invoke("save_import_session", {
+        key,
+        title: before.named ? current.title : title,
+        url: singleUrlItem?.url ?? firstPlaylistUrl,
+        payload: JSON.stringify(payload),
+      });
+
       const noArtist = entries.filter((e) => e.source !== "text" && !buildWanted(e).artist).length;
-      notify(`Fetched ${entries.length} track(s)${title ? ` from "${title}"` : ""}`, "success", {
+      notify(`Fetched ${entries.length} track(s) from "${title}"`, "success", {
         details: {
           itemCount: items.length,
           title,
@@ -549,38 +798,22 @@ export function YtMusicImportPage({
           fetchMs: Date.now() - fetchStarted,
         },
       });
+      if (resumed) notify(`Kept ${resumed} decision(s) you made in "${resumedFrom}"`, "info");
+    };
 
-      const enrichableIds = entries.filter((e) => e.source !== "text").map((e) => e.videoId);
-      if (enrichableIds.length) void runEnrichment(enrichableIds);
-
-      // Re-importing something matched before restores every decision made
-      // last time. The matcher has just re-run against the (possibly
-      // larger) collection, and these decisions are layered on top — so
-      // newly-acquired tracks get matched while past confirmations and
-      // denials stand.
-      const saved = await invoke<ImportSession | null>("load_import_session", { key });
-      if (saved) {
-        try {
-          const payload = JSON.parse(saved.payload) as SessionPayload;
-          setOverrides(payload.overrides ?? {});
-          setDenied(payload.denied ?? {});
-          setCandIndex(payload.candIndex ?? {});
-          setFromSearch(payload.fromSearch ?? {});
-          setResumedFrom(saved);
-          const decided = Object.keys(payload.overrides ?? {}).length;
-          notify(
-            `Resumed ${decided} saved decision(s) from ${new Date(saved.savedAt * 1000).toLocaleDateString()}`,
-            "info",
-          );
-        } catch {
-          notify("A saved session for this playlist could not be read — starting fresh", "info");
-        }
-      }
-    } catch (e) {
-      notify(String(e), "error", { details: { input: trimmed } });
-    } finally {
-      setFetching(false);
+    // Never rejects: whoever follows it only needs to know it is over.
+    const running = job()
+      .catch((e) => notify(String(e), "error", { details: { input: trimmed } }))
+      .then(() => void openSessions.inFlight.delete(key));
+    openSessions.inFlight.set(key, running);
+    setFetchingKeys((prev) => [...prev, key]);
+    if (shownKeyRef.current === key) {
+      setPlaylist(null);
+      setMatches(null);
     }
+    followFetch(key);
+    await running;
+    if (mountedRef.current) void refreshSessions();
   };
 
   const loadListFile = async () => {
@@ -593,6 +826,7 @@ export function YtMusicImportPage({
     try {
       const contents = await invoke<string>("read_text_file", { path: picked });
       setSourceText(contents);
+      setBeforeOrganize(null);
     } catch (e) {
       notify(String(e), "error");
     }
@@ -837,7 +1071,7 @@ export function YtMusicImportPage({
     (candIndex[videoId] ?? 0) !== 0;
 
   // --- Session persistence --------------------------------------------------
-  const buildPayload = (): SessionPayload => ({
+  const buildPayload = (box = sourceText): SessionPayload => ({
     version: 1,
     entries: playlist?.entries ?? [],
     overrides,
@@ -845,42 +1079,54 @@ export function YtMusicImportPage({
     candIndex,
     fromSearch,
     sourceText: importedTextRef.current,
+    draft: box === importedTextRef.current ? undefined : box,
+    named: named || undefined,
+    contentKey: contentKeyRef.current,
+    stats: matches ? { matched: matchedList.length, total: matches.length } : statsRef.current,
+    links: Object.keys(links).length ? links : undefined,
   });
 
-  const persist = async (quiet: boolean) => {
-    if (!importKey || !playlist) return;
+  const lastSavedRef = useRef("");
+
+  const persist = async (quiet: boolean, box?: string) => {
+    // While a fetch runs the screen is empty and the fetch owns the row:
+    // saving now would put an empty list over its result.
+    const key = shownKeyRef.current;
+    if (!key || key !== importKey || openSessions.inFlight.has(key)) return;
+    const args = { key, title: sessionName, url: fetchedUrl, payload: JSON.stringify(buildPayload(box)) };
+    const signature = JSON.stringify(args);
+    // Nothing changed since the last save.
+    if (quiet && signature === lastSavedRef.current) return;
+    lastSavedRef.current = signature;
+    const saving = invoke("save_import_session", args);
+    openSessions.pendingSave = saving.catch(() => {});
     try {
-      await invoke("save_import_session", {
-        key: importKey,
-        title: playlist.title,
-        url: fetchedUrl,
-        payload: JSON.stringify(buildPayload()),
-      });
+      await saving;
       if (!quiet) notify("Import session saved", "success");
     } catch (e) {
-      if (!quiet) notify(String(e), "error");
+      lastSavedRef.current = "";
+      notify(`Could not save this import: ${String(e)}`, "error");
     }
   };
+  const persistRef = useRef<() => Promise<void>>(async () => {});
+  persistRef.current = () => persist(true);
 
   // Autosave, debounced: every decision is a keystroke-scale event and each
   // one is a sqlite write, so they are coalesced rather than written per
   // click. The explicit Save button exists for reassurance, not necessity.
   useEffect(() => {
-    if (!importKey || !matches) return;
+    if (!importKey) return;
     const t = setTimeout(() => void persist(true), 600);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overrides, denied, candIndex, fromSearch, importKey, matches]);
+  }, [overrides, denied, candIndex, fromSearch, importKey, matches, sourceText, sessionName, links]);
 
-  const forgetSession = async () => {
-    if (!importKey) return;
-    await invoke("delete_import_session", { key: importKey });
-    setResumedFrom(null);
+  const clearDecisions = () => {
     setOverrides({});
     setDenied({});
     setCandIndex({});
     setFromSearch({});
-    notify("Saved decisions for this playlist discarded", "info");
+    notify("Your decisions for this import were cleared", "info");
   };
 
   /**
@@ -911,21 +1157,145 @@ export function YtMusicImportPage({
     }
   };
 
-  /** Clears the screen without touching the saved session. */
-  const closePlaylist = () => {
-    setPlaylist(null);
-    setFetchedUrl("");
-    setImportKey(null);
-    setResumedFrom(null);
-  };
-
   // --- Clipboard / export ---------------------------------------------------
   /** The missing list as plain data, for logging/reporting — not just a count. */
   const missingListDetails = () =>
     missingList.map(({ m }) => {
       const w = buildWanted(m.entry);
-      return { title: w.title, artist: w.artist, url: m.entry.url, videoId: m.entry.videoId };
+      return { title: w.title, artist: w.artist, url: entryUrl(m.entry), videoId: m.entry.videoId };
     });
+
+  const copyText = async (text: string, what: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      notify(`Copied ${what}`, "success");
+    } catch (e) {
+      notify(`Could not copy: ${String(e)}`, "error");
+    }
+  };
+
+  /** What "Copy Names" acts on: the ticked rows, or every row when none is. */
+  const rowsToCopy = () => (matches ?? []).filter((m) => !picked.size || picked.has(m.entry.videoId));
+
+  const copyNames = (withLinks = false) => {
+    const rows = rowsToCopy();
+    if (!rows.length) return;
+    const text = rows
+      .map(({ entry }) => (withLinks && entryUrl(entry) ? `${entryName(entry)} ${entryUrl(entry)}` : entryName(entry)))
+      .join("\n");
+    void copyText(text, rows.length === 1 ? `"${entryName(rows[0].entry)}"` : `${rows.length} names`);
+  };
+
+  const togglePicked = (id: string, range: boolean) => {
+    const ids = (matches ?? []).map((m) => m.entry.videoId);
+    const from = range && pickAnchorRef.current ? ids.indexOf(pickAnchorRef.current) : -1;
+    const to = ids.indexOf(id);
+    const span = from < 0 ? [id] : ids.slice(Math.min(from, to), Math.max(from, to) + 1);
+    const on = !picked.has(id);
+    setPicked((prev) => {
+      const next = new Set(prev);
+      for (const x of span) {
+        if (on) next.add(x);
+        else next.delete(x);
+      }
+      return next;
+    });
+    pickAnchorRef.current = id;
+  };
+
+  // Ctrl+C copies the ticked rows' names. Text selected with the mouse, and
+  // text in a field, keep the browser's own copy. Esc unticks.
+  useEffect(() => {
+    if (!picked.size || mode !== "import" || organizing) return;
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      const typing =
+        el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && el.type !== "checkbox");
+      if (typing) return;
+      if (e.key === "Escape") {
+        setPicked(new Set());
+        return;
+      }
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "c") return;
+      if (window.getSelection()?.toString()) return;
+      e.preventDefault();
+      copyNames();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [picked, matches, mode, organizing]);
+
+  const boxItems = useMemo(() => parseImportInput(sourceText), [sourceText]);
+  const hasTypedLines = boxItems.some((i) => i.kind === "text");
+  /** Typed songs only go through the matcher, so yt-dlp matters just for links. */
+  const canFetch = !!ytdlp?.installed || boxItems.every((i) => i.kind === "text");
+
+  /** An entry's own link, or the one looked up for a typed song. */
+  const entryUrl = (entry: PlaylistEntry) => entry.url || links[entry.videoId]?.url || "";
+
+  const stopLinks = () => {
+    if (linkRunRef.current) linkRunRef.current.cancelled = true;
+    linkRunRef.current = null;
+    setLinkProgress(null);
+  };
+
+  /** Typed songs among the ticked rows (or all rows) that have no link yet. */
+  const rowsToLink = () => rowsToCopy().filter((m) => !entryUrl(m.entry));
+
+  /** Looks up YouTube Music links for typed songs, four at a time. */
+  const getLinks = async () => {
+    const rows = rowsToLink();
+    if (!rows.length) return;
+    stopLinks();
+    const run = { cancelled: false };
+    linkRunRef.current = run;
+    setLinkProgress({ done: 0, total: rows.length });
+    let done = 0;
+    let found = 0;
+    let unsure = 0;
+    const failed: string[] = [];
+    await runLimited(
+      rows,
+      4,
+      async ({ entry }) => {
+        try {
+          const link = await invoke<FoundLink | null>("find_ytmusic_link", { query: entry.title });
+          if (run.cancelled) return;
+          if (link) {
+            found++;
+            if (!linkLooksRight(entry.title, link)) unsure++;
+            setLinks((prev) => ({ ...prev, [entry.videoId]: link }));
+          }
+        } catch (e) {
+          failed.push(`${entry.title}: ${String(e)}`);
+        }
+        done++;
+        if (!run.cancelled) setLinkProgress({ done, total: rows.length });
+      },
+      () => run.cancelled,
+    );
+    if (run.cancelled) return;
+    linkRunRef.current = null;
+    setLinkProgress(null);
+    const notes = [
+      unsure ? `${unsure} to check` : "",
+      rows.length - found - failed.length ? `${rows.length - found - failed.length} not found` : "",
+      failed.length ? `${failed.length} failed` : "",
+    ].filter(Boolean);
+    notify(
+      `Found ${found} of ${rows.length} link(s)${notes.length ? ` — ${notes.join(", ")}` : ""}`,
+      found ? "success" : "error",
+      { details: { failed } },
+    );
+  };
+
+  const copyLinks = () => {
+    const urls = rowsToCopy()
+      .map((m) => entryUrl(m.entry))
+      .filter(Boolean);
+    if (urls.length) void copyText(urls.join("\n"), `${urls.length} link(s)`);
+  };
 
   const copyMissingLinks = async () => {
     if (!missingList.length) return;
@@ -933,7 +1303,8 @@ export function YtMusicImportPage({
       .map(({ m }) => {
         const w = buildWanted(m.entry);
         const label = w.artist ? `${w.artist} - ${w.title}` : w.title;
-        return m.entry.url ? `${label} ${m.entry.url}` : label;
+        const url = entryUrl(m.entry);
+        return url ? `${label} ${url}` : label;
       })
       .join("\n");
     await navigator.clipboard.writeText(text);
@@ -981,7 +1352,7 @@ export function YtMusicImportPage({
 
   const makeLog = () =>
     buildMatchLog(
-      playlist?.title ?? "YouTube Music Import",
+      sessionName || "YouTube Music Import",
       fetchedUrl,
       matches ?? [],
       decisionState(),
@@ -999,7 +1370,7 @@ export function YtMusicImportPage({
 
   const saveMatchLog = async () => {
     if (!matches) return;
-    const base = sanitizeFilenamePart(playlist?.title || "playlist");
+    const base = sanitizeFilenamePart(sessionName || "playlist");
     const dest = await saveDialog({
       title: "Save Match Log",
       defaultPath: `${base} - match log.json`,
@@ -1024,7 +1395,7 @@ export function YtMusicImportPage({
 
   const runExport = async (kind: "m3u8" | "rekordbox") => {
     if (!matchedList.length) return;
-    const base = sanitizeFilenamePart(playlist?.title || "playlist");
+    const base = sanitizeFilenamePart(sessionName || "playlist");
     const dest = await saveDialog({
       title: kind === "m3u8" ? "Export M3U8 Playlist" : "Export Rekordbox XML",
       defaultPath: kind === "m3u8" ? `${base}.m3u8` : `${base}.xml`,
@@ -1041,7 +1412,7 @@ export function YtMusicImportPage({
       const contents =
         kind === "m3u8"
           ? buildM3u8(paths, fileByPath, tags)
-          : buildRekordboxPlaylistXml(playlist?.title || "YouTube Music Import", paths, fileByPath, tags);
+          : buildRekordboxPlaylistXml(sessionName || "YouTube Music Import", paths, fileByPath, tags);
       await invoke("write_text_file", { path: dest, contents });
       notify(`Exported ${paths.length} track(s) to ${dest}`, "success");
       await revealItemInDir(dest);
@@ -1099,9 +1470,80 @@ export function YtMusicImportPage({
           AI Playlists
         </button>
       </div>
+      {openKeys.length > 0 && (
+        <div className="flex items-center gap-1 overflow-x-auto border-b px-6 py-1.5">
+          <button
+            onClick={() => void goHome()}
+            className={cn(
+              "shrink-0 rounded-md px-2.5 py-1 text-xs font-medium",
+              importKey ? "text-muted-foreground hover:bg-accent" : "bg-accent",
+            )}
+          >
+            All imports
+          </button>
+          {openKeys.map((k) => {
+            const name =
+              (k === importKey ? sessionName : sessions?.find((x) => x.key === k)?.title) || "Untitled import";
+            return (
+              <span
+                key={k}
+                className={cn(
+                  "flex max-w-52 shrink-0 items-center gap-1 rounded-md pl-2.5 pr-1 text-xs",
+                  k === importKey ? "bg-accent font-medium" : "text-muted-foreground hover:bg-accent/50",
+                )}
+              >
+                {fetchingKeys.includes(k) && <Loader2 className="h-3 w-3 shrink-0 animate-spin" />}
+                <button className="min-w-0 truncate py-1" title={name} onClick={() => void openSession(k)}>
+                  {name}
+                </button>
+                <button
+                  className="shrink-0 rounded p-0.5 hover:text-foreground"
+                  title="Close this tab — the import stays saved"
+                  onClick={() => void closeTab(k)}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            );
+          })}
+          <button
+            onClick={() => void createSession()}
+            className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            title="New import"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+      {!importKey ? (
+        <ImportSessionsLanding
+          sessions={sessions}
+          openKeys={openKeys}
+          fetchingKeys={fetchingKeys}
+          onNew={() => void createSession()}
+          onOpen={(k) => void openSession(k)}
+          onRename={(k, n) => void renameSession(k, n)}
+          onDelete={(k) => void deleteSession(k)}
+        />
+      ) : (
+      <>
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-6">
         <div>
-          <h1 className="text-xl font-bold">YouTube Music Import</h1>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => void goHome()}
+              className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              title="All imports"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </button>
+            <SessionNameInput
+              key={importKey}
+              name={sessionName}
+              className="min-w-0 max-w-xl flex-1 rounded-md border border-transparent bg-transparent px-1 text-xl font-bold outline-none hover:border-input focus:border-input"
+              onRename={(n) => void renameSession(importKey, n)}
+            />
+          </div>
           <p className="text-sm text-muted-foreground">
             Paste a YouTube Music (or YouTube) playlist link, match it against your collection, and export a
             Rekordbox playlist — matching against {files.length} track{files.length === 1 ? "" : "s"}
@@ -1192,8 +1634,12 @@ export function YtMusicImportPage({
           <div className="flex flex-col gap-2 px-5 py-3">
             <textarea
               value={sourceText}
-              onChange={(e) => setSourceText(e.target.value)}
-              onKeyDown={(e) => (e.key === "Enter" && (e.metaKey || e.ctrlKey)) && runImport()}
+              onChange={(e) => {
+                setSourceText(e.target.value);
+                // Undo would throw these edits away.
+                setBeforeOrganize(null);
+              }}
+              onKeyDown={(e) => (e.key === "Enter" && (e.metaKey || e.ctrlKey)) && canFetch && void runImport()}
               placeholder={
                 "Paste a YouTube / YouTube Music playlist, video links (one per line),\n" +
                 "or just song names:\n" +
@@ -1204,13 +1650,44 @@ export function YtMusicImportPage({
               className="min-h-20 flex-1 resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
             />
             <div className="flex items-center justify-between gap-2">
-              <Button variant="secondary" size="sm" onClick={loadListFile} disabled={fetching}>
-                <FileUp />
-                Load .txt / .csv
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="secondary" size="sm" onClick={loadListFile} disabled={fetching}>
+                  <FileUp />
+                  Load .txt / .csv
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setOrganizing(true)}
+                  disabled={fetching || !hasTypedLines}
+                  title={
+                    hasTypedLines
+                      ? "Let AI put a messy list into one song per line — you check it first"
+                      : "Paste a list of song names first — links alone need no organizing"
+                  }
+                >
+                  <Sparkles />
+                  Organize with AI
+                </Button>
+                {beforeOrganize !== null && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setSourceText(beforeOrganize);
+                      setBeforeOrganize(null);
+                    }}
+                    disabled={fetching}
+                    title="Put your list back the way it was before the AI"
+                  >
+                    <Undo2 />
+                    Undo AI
+                  </Button>
+                )}
+              </div>
               <Button
-                onClick={runImport}
-                disabled={fetching || !sourceText.trim() || !ytdlp?.installed}
+                onClick={() => void runImport()}
+                disabled={fetching || !sourceText.trim() || !canFetch}
                 title="Ctrl/Cmd+Enter also works"
               >
                 {fetching ? <Loader2 className="animate-spin" /> : <Search />}
@@ -1225,7 +1702,6 @@ export function YtMusicImportPage({
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2 text-sm">
                 <ListMusic className="h-4 w-4 text-primary" />
-                <span className="font-semibold">{playlist?.title}</span>
                 <span className="text-xs text-muted-foreground">
                   {matchedList.length} matched · {missingList.length} missing · {matches.length} total
                 </span>
@@ -1244,6 +1720,16 @@ export function YtMusicImportPage({
                 <Button variant="secondary" size="sm" onClick={() => void persist(false)}>
                   <Save />
                   Save Session
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={clearDecisions}
+                  disabled={!hasDecisions({ overrides, denied, candIndex, fromSearch })}
+                  title="Forget every confirm and deny in this import and start matching over"
+                >
+                  <RotateCcw />
+                  Clear Decisions
                 </Button>
                 <Button variant="secondary" size="sm" onClick={copyMatchLog}>
                   <ClipboardCopy />
@@ -1286,36 +1772,79 @@ export function YtMusicImportPage({
               </div>
             )}
 
-            {resumedFrom && (
-              <div className="flex items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
-                <RotateCcw className="h-3.5 w-3.5 shrink-0 text-primary" />
-                <span className="min-w-0 flex-1">
-                  Resumed the decisions you saved on{" "}
-                  {new Date(resumedFrom.savedAt * 1000).toLocaleString()}. Newly-acquired tracks
-                  were matched on top — press <span className="font-medium">Re-match</span> after
-                  indexing more music.
-                </span>
-                <button
-                  onClick={closePlaylist}
-                  className="flex shrink-0 items-center gap-1 text-muted-foreground hover:text-foreground"
-                  title="Close this playlist — the saved decisions are kept"
-                >
-                  <X className="h-3.5 w-3.5" />
-                  Close
-                </button>
-                <button
-                  onClick={() => void forgetSession()}
-                  className="flex shrink-0 items-center gap-1 text-muted-foreground hover:text-destructive"
-                  title="Discard the saved decisions for this playlist"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  Forget
-                </button>
-              </div>
-            )}
-
             <Card className="p-2">
-              <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-3 border-b px-2 pb-2">
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    className="accent-primary"
+                    checked={matches.length > 0 && picked.size === matches.length}
+                    ref={(el) => {
+                      if (el) el.indeterminate = picked.size > 0 && picked.size < matches.length;
+                    }}
+                    onChange={(e) =>
+                      setPicked(e.target.checked ? new Set(matches.map((m) => m.entry.videoId)) : new Set())
+                    }
+                  />
+                  {picked.size ? `${picked.size} selected` : "Select all"}
+                </label>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => copyNames()}
+                  title={picked.size ? "Copy the selected names (Ctrl+C)" : "Copy every name in the list"}
+                >
+                  <Copy />
+                  {picked.size ? `Copy Names (${picked.size})` : "Copy All Names"}
+                </Button>
+                {rowsToCopy().some((m) => entryUrl(m.entry)) && (
+                  <>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={copyLinks}
+                      title="Copy just the links, one per line"
+                    >
+                      <Link2 />
+                      Copy Links ({rowsToCopy().filter((m) => entryUrl(m.entry)).length})
+                    </Button>
+                    <Button variant="secondary" size="sm" onClick={() => copyNames(true)}>
+                      <Copy />
+                      Copy Names + Links
+                    </Button>
+                  </>
+                )}
+                {linkProgress ? (
+                  <Button variant="secondary" size="sm" onClick={stopLinks} title="Stop — links found so far are kept">
+                    <Square />
+                    Finding links {linkProgress.done} / {linkProgress.total}
+                  </Button>
+                ) : (
+                  rowsToLink().length > 0 && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void getLinks()}
+                      disabled={!ytdlp?.installed}
+                      title={
+                        ytdlp?.installed
+                          ? "Search YouTube Music for the songs that have no link"
+                          : "Needs yt-dlp — install it above"
+                      }
+                    >
+                      <Search />
+                      Get YT Music Links ({rowsToLink().length})
+                    </Button>
+                  )
+                )}
+                <span className="text-[10px] text-muted-foreground">
+                  Tick rows (Shift+click for a range), or select a name with the mouse
+                </span>
+              </div>
+              {/* Dragging selected text would start the webview's native content
+                  drag, which can freeze the renderer (see CLAUDE.md), so it is
+                  cancelled before it starts. */}
+              <div className="space-y-1 pt-1" onDragStart={(e) => e.preventDefault()}>
                 {matches.map((m) => {
                   const id = m.entry.videoId;
                   const path = resolvedPath(m);
@@ -1335,6 +1864,18 @@ export function YtMusicImportPage({
                         focusedId === id ? "bg-accent/30" : "hover:bg-accent/20",
                       )}
                     >
+                      <input
+                        type="checkbox"
+                        className="shrink-0 accent-primary"
+                        checked={picked.has(id)}
+                        aria-label={`Select ${entryName(m.entry)}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          togglePicked(id, e.shiftKey);
+                        }}
+                        // The click handler does the work (it has shiftKey).
+                        onChange={() => {}}
+                      />
                       <span className="w-6 shrink-0 text-right text-xs text-muted-foreground">
                         {m.entry.index + 1}
                       </span>
@@ -1352,14 +1893,24 @@ export function YtMusicImportPage({
                         )}
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5">
-                            <span className="truncate text-sm" title={m.entry.title}>
+                            <span className="cursor-text select-text truncate text-sm" title={m.entry.title}>
                               {want.title}
                             </span>
-                            {m.entry.source !== "text" && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void copyText(entryName(m.entry), `"${entryName(m.entry)}"`);
+                              }}
+                              className="shrink-0 text-muted-foreground hover:text-primary"
+                              title="Copy this name"
+                            >
+                              <Copy className="h-3 w-3" />
+                            </button>
+                            {entryUrl(m.entry) && (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  void openUrl(m.entry.url);
+                                  void openUrl(entryUrl(m.entry));
                                 }}
                                 className="shrink-0 text-muted-foreground hover:text-primary"
                                 title="Open on YouTube Music"
@@ -1368,11 +1919,30 @@ export function YtMusicImportPage({
                               </button>
                             )}
                           </div>
+                          {links[id] && !m.entry.url && (
+                            <FoundLinkLine
+                              typed={m.entry.title}
+                              link={links[id]}
+                              onCopy={() => void copyText(links[id].url, "the link")}
+                              onRemove={() =>
+                                setLinks((prev) => {
+                                  const next = { ...prev };
+                                  delete next[id];
+                                  return next;
+                                })
+                              }
+                            />
+                          )}
                           {(() => {
                             const meta = metaLine(m.entry);
                             if (!meta.text) return null;
                             return (
-                              <div className={cn("truncate text-xs", meta.muted && "text-muted-foreground")}>
+                              <div
+                                className={cn(
+                                  "truncate text-xs",
+                                  meta.muted ? "text-muted-foreground" : "cursor-text select-text",
+                                )}
+                              >
                                 {meta.text}
                               </div>
                             );
@@ -1514,7 +2084,7 @@ export function YtMusicImportPage({
                     Copy Titles
                   </Button>
                 </div>
-                <div className="max-h-64 overflow-y-auto px-5 pb-4">
+                <div className="max-h-64 overflow-y-auto px-5 pb-4" onDragStart={(e) => e.preventDefault()}>
                   <ol className="space-y-0.5">
                     {missingList.map(({ m }) => {
                       const w = buildWanted(m.entry);
@@ -1523,17 +2093,17 @@ export function YtMusicImportPage({
                           <span className="w-6 shrink-0 text-right text-muted-foreground">
                             {m.entry.index + 1}
                           </span>
-                          <span className="min-w-0 flex-1 truncate" title={m.entry.title}>
+                          <span className="min-w-0 flex-1 cursor-text select-text truncate" title={m.entry.title}>
                             <span className="text-muted-foreground">{w.artist ? `${w.artist} — ` : ""}</span>
                             {w.title}
                           </span>
-                          {m.entry.url && (
+                          {entryUrl(m.entry) && (
                             <button
-                              onClick={() => void openUrl(m.entry.url)}
+                              onClick={() => void openUrl(entryUrl(m.entry))}
                               className="shrink-0 font-mono text-[10px] text-primary hover:underline"
                               title="Open on YouTube Music"
                             >
-                              {m.entry.url}
+                              {entryUrl(m.entry)}
                             </button>
                           )}
                         </li>
@@ -1590,6 +2160,24 @@ export function YtMusicImportPage({
           }}
           onAddToBatch={onAddToBatch}
           onInspect={onInspect}
+        />
+      )}
+      </>
+      )}
+
+      {organizing && importKey && (
+        <OrganizeListDialog
+          backend={settings.aiBackend}
+          source={sourceText}
+          generate={generate}
+          canFetch={!fetching && canFetch}
+          onUse={(text, fetchNow) => {
+            setBeforeOrganize(sourceText);
+            setSourceText(text);
+            setOrganizing(false);
+            if (fetchNow) void runImport(text);
+          }}
+          onClose={() => setOrganizing(false)}
         />
       )}
 

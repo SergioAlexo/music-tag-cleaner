@@ -556,6 +556,109 @@ pub async fn enrich_ytmusic_entries(
     Ok(())
 }
 
+/// One YouTube Music search result for a typed song.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FoundLink {
+    pub video_id: String,
+    pub url: String,
+    pub title: String,
+    pub artists: Vec<String>,
+}
+
+/// How many search results to look through for the typed title.
+const LINK_SEARCH_RESULTS: &str = "5";
+
+/// YouTube Music search, limited to its Songs section (`#songs`), so the
+/// answer is the track itself rather than a live clip or a lyrics video.
+fn music_search_url(query: &str) -> Result<String, String> {
+    let mut url = reqwest::Url::parse("https://music.youtube.com/search").map_err(|e| e.to_string())?;
+    url.query_pairs_mut().append_pair("q", query);
+    url.set_fragment(Some("songs"));
+    Ok(url.to_string())
+}
+
+fn lower_words(s: &str) -> Vec<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// The search ranks by its own idea of relevance, so "Anna Asti Царица" can
+/// put a bigger Anna Asti hit first. The first result whose whole title was
+/// typed wins; failing that the top one, which the page marks "check".
+fn pick_search_hit(query: &str, hits: Vec<PlaylistEntry>) -> Option<PlaylistEntry> {
+    let typed: std::collections::HashSet<String> = lower_words(query).into_iter().collect();
+    let exact = hits.iter().position(|h| {
+        let words = lower_words(&h.title);
+        !words.is_empty() && words.iter().all(|w| typed.contains(w))
+    });
+    hits.into_iter().nth(exact.unwrap_or(0))
+}
+
+/// Finds the YouTube Music link for one typed song: one search, then the real
+/// title and artist of the result (search results carry no artist), so the
+/// page can show what was found instead of a bare link. `None` when nothing
+/// came back.
+#[tauri::command]
+pub async fn find_ytmusic_link(app: AppHandle, query: String) -> Result<Option<FoundLink>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let exe = find_ytdlp(&app)
+            .ok_or_else(|| "yt-dlp is not installed — install it from the Components page first".to_string())?;
+        let mut cmd = Command::new(&exe);
+        cmd.args([
+            "-J",
+            "--flat-playlist",
+            "--no-warnings",
+            "--ignore-errors",
+            "--playlist-end",
+            LINK_SEARCH_RESULTS,
+            "--socket-timeout",
+            YTDLP_SOCKET_TIMEOUT,
+            &music_search_url(&query)?,
+        ]);
+        hide_console(&mut cmd);
+        let output = cmd.output().map_err(|e| format!("Could not run yt-dlp: {e}"))?;
+        let raw = String::from_utf8_lossy(&output.stdout).to_string();
+        let hits = match parse_playlist_json(&raw) {
+            Ok(r) => r.entries,
+            Err(e) if output.status.success() => return Err(e),
+            Err(_) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let msg = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("yt-dlp failed").trim().to_string();
+                return Err(format!("yt-dlp error: {msg}"));
+            }
+        };
+        let Some(hit) = pick_search_hit(&query, hits) else {
+            return Ok(None);
+        };
+
+        let conn = crate::commands::library_index::open_db(&app).ok();
+        let meta = match conn.as_ref().and_then(|c| read_cached_meta(c, &hit.video_id)) {
+            Some(m) => m,
+            None => {
+                let m = fetch_one_video_meta(&exe, &hit.video_id);
+                if let (None, Some(c)) = (&m.error, conn.as_ref()) {
+                    let _ = cache_meta(c, &m);
+                }
+                m
+            }
+        };
+        Ok(Some(FoundLink {
+            url: hit.url,
+            // Without its details the link still stands; the page just has
+            // less to check it by.
+            title: meta.title.unwrap_or(hit.title),
+            artists: meta.artists,
+            video_id: hit.video_id,
+        }))
+    })
+    .await
+    .map_err(|_| "The link search failed unexpectedly".to_string())?
+}
+
 /// The owner may fetch a different playlist while one enrichment run is
 /// still in flight — this stops the workers between videos rather than
 /// letting a stale run keep emitting into the new one.
@@ -660,6 +763,23 @@ pub struct ImportSessionSummary {
     pub title: String,
     pub url: String,
     pub saved_at: i64,
+    pub track_count: usize,
+    /// How many were matched when it was last saved; `None` on a session from
+    /// before the page recorded it.
+    pub matched: Option<u64>,
+    /// Which list this is, for sessions whose key no longer says so.
+    pub content_key: Option<String>,
+}
+
+/// The few facts the landing page shows, read out of the otherwise opaque
+/// payload. Anything missing or unreadable just isn't shown.
+fn payload_facts(payload: &str) -> (usize, Option<u64>, Option<String>) {
+    let v: Value = serde_json::from_str(payload).unwrap_or(Value::Null);
+    (
+        v["entries"].as_array().map_or(0, Vec::len),
+        v["stats"]["matched"].as_u64(),
+        v["contentKey"].as_str().map(String::from),
+    )
 }
 
 #[tauri::command]
@@ -718,15 +838,19 @@ pub async fn list_import_sessions(app: AppHandle) -> Result<Vec<ImportSessionSum
     tauri::async_runtime::spawn_blocking(move || {
         let conn = crate::commands::library_index::open_db(&app)?;
         let mut stmt = conn
-            .prepare("SELECT key, title, url, saved_at FROM import_session ORDER BY saved_at DESC")
+            .prepare("SELECT key, title, url, saved_at, payload FROM import_session ORDER BY saved_at DESC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| {
+                let (track_count, matched, content_key) = payload_facts(&r.get::<_, String>(4)?);
                 Ok(ImportSessionSummary {
                     key: r.get(0)?,
                     title: r.get(1)?,
                     url: r.get(2)?,
                     saved_at: r.get(3)?,
+                    track_count,
+                    matched,
+                    content_key,
                 })
             })
             .map_err(|e| e.to_string())?
@@ -736,6 +860,34 @@ pub async fn list_import_sessions(app: AppHandle) -> Result<Vec<ImportSessionSum
     })
     .await
     .map_err(|_| "Listing import sessions failed unexpectedly".to_string())?
+}
+
+/// Renames a session without touching `saved_at`, so the list keeps its order.
+/// `named` marks the name as the user's own, which a later fetch must not
+/// replace with the playlist's title.
+#[tauri::command]
+pub async fn rename_import_session(app: AppHandle, key: String, title: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = crate::commands::library_index::open_db(&app)?;
+        rename_session(&conn, &key, &title)
+    })
+    .await
+    .map_err(|_| "Renaming the import session failed unexpectedly".to_string())?
+}
+
+fn rename_session(conn: &Connection, key: &str, title: &str) -> Result<(), String> {
+    let changed = conn
+        .execute(
+            "UPDATE import_session
+             SET title = ?2, payload = json_set(payload, '$.named', json('true'))
+             WHERE key = ?1",
+            rusqlite::params![key, title],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err("That import no longer exists".to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -753,6 +905,78 @@ pub async fn delete_import_session(app: AppHandle, key: String) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_url_escapes_the_song_and_asks_for_songs_only() {
+        let url = music_search_url("AC/DC & Царица #1").unwrap();
+        assert!(url.starts_with("https://music.youtube.com/search?q="));
+        assert!(url.ends_with("#songs"));
+        let q = reqwest::Url::parse(&url).unwrap();
+        assert_eq!(q.query_pairs().next().unwrap().1, "AC/DC & Царица #1");
+    }
+
+    #[test]
+    fn search_hit_prefers_the_typed_title_over_the_top_result() {
+        let hit = |id: &str, title: &str| PlaylistEntry {
+            index: 0,
+            video_id: id.into(),
+            url: String::new(),
+            title: title.into(),
+            duration_secs: None,
+            uploader: None,
+            artist: None,
+        };
+        let hits = vec![hit("a", "По барам"), hit("b", "Царица")];
+        assert_eq!(pick_search_hit("Anna Asti — Царица", hits.clone()).unwrap().video_id, "b");
+        assert_eq!(pick_search_hit("Anna Asti — Феникс", hits).unwrap().video_id, "a");
+        assert!(pick_search_hit("x", vec![]).is_none());
+    }
+
+    #[test]
+    fn payload_facts_survive_old_and_broken_payloads() {
+        assert_eq!(
+            payload_facts(r#"{"entries":[{},{}],"stats":{"matched":1,"total":2},"contentKey":"list:PL"}"#),
+            (2, Some(1), Some("list:PL".to_string()))
+        );
+        assert_eq!(payload_facts(r#"{"entries":[{}]}"#), (1, None, None));
+        assert_eq!(payload_facts("{"), (0, None, None));
+    }
+
+    #[test]
+    fn renaming_keeps_the_payload_and_the_saved_date() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"CREATE TABLE import_session (key TEXT PRIMARY KEY, title TEXT, url TEXT, saved_at INTEGER, payload TEXT);
+               INSERT INTO import_session VALUES ('k', 'old', '', 7, '{"overrides":{"a":"C:\\x"}}');"#,
+        )
+        .unwrap();
+        rename_session(&conn, "k", "Wedding").unwrap();
+        let (title, at, payload): (String, i64, String) = conn
+            .query_row("SELECT title, saved_at, payload FROM import_session", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        let v: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!((title.as_str(), at), ("Wedding", 7));
+        assert_eq!(v["named"], Value::Bool(true));
+        assert_eq!(v["overrides"]["a"], "C:\\x");
+        assert!(rename_session(&conn, "gone", "x").is_err());
+    }
+
+    /// Real search through yt-dlp; needs it on `PATH` and network.
+    #[test]
+    #[ignore]
+    fn real_link_search_smoke_test() {
+        let exe = PathBuf::from(std::env::var("MTC_YTDLP").expect("set MTC_YTDLP"));
+        let mut cmd = Command::new(&exe);
+        cmd.args(["-J", "--flat-playlist", "--no-warnings", "--playlist-end", LINK_SEARCH_RESULTS]);
+        cmd.arg(music_search_url("Anna Asti — Царица").unwrap());
+        let out = cmd.output().unwrap();
+        let hits = parse_playlist_json(&String::from_utf8_lossy(&out.stdout)).unwrap().entries;
+        let hit = pick_search_hit("Anna Asti — Царица", hits).unwrap();
+        println!("{} {:?}", hit.url, fetch_one_video_meta(&exe, &hit.video_id));
+        assert_eq!(hit.title, "Царица");
+    }
 
     #[test]
     fn parses_a_flat_playlist_with_entries_wrapper() {

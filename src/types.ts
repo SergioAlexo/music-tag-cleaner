@@ -780,6 +780,11 @@ export interface ImportSessionSummary {
   title: string;
   url: string;
   savedAt: number;
+  trackCount: number;
+  /** Null on a session saved before the page recorded it. */
+  matched: number | null;
+  /** Which list this is; null when the session's own key still says so. */
+  contentKey: string | null;
 }
 
 /** Splits an indexed row back into the `AudioFile` + `TagData` pair the rest

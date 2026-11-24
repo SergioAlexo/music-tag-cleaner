@@ -31,6 +31,7 @@ requests mean this one.
 | Search (one implementation everywhere; reads tags, not visible columns) | `src/lib/trackSearch.ts` |
 | Synth presets (Preset Translator: dialog, commands, engine) | `src/components/PresetsDialog.tsx`, `src/lib/presets.ts`, `src-tauri/src/commands/presets.rs` + `engines.rs`, `presetforge/` (Python engine), example plugin `plugins-examples/preset-translator/` |
 | YouTube Music import page | `src/pages/YtMusicImportPage.tsx`, `src/components/LibrarySearchPanel.tsx` |
+| Import sessions (landing page, tabs), AI list organizer, links for typed songs | `src/lib/ytSessions.ts`, `ytListAI.ts`, `ytLinks.ts`, `src/components/ImportSessionsLanding.tsx`, `OrganizeListDialog.tsx` |
 | Playlist matcher / match log | `src/lib/ytMatch.ts` (+ tests), `src/lib/ytMatchLog.ts` |
 | yt-dlp fetch + import sessions (sqlite) | `src-tauri/src/commands/ytmusic.rs` |
 | Prelisten player (single global player via `takeOverPlayback`) | `src/components/AudioPreview.tsx` |

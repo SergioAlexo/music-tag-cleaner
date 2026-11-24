@@ -3080,6 +3080,46 @@ current Album. The sidebar Albums tab already existed (facets).
 `libraryAlbumNames` test (dedupe across artists, "10 Encore" after "3 Peak").
 Not yet tried in the installed app.
 
+### 81. YouTube import: sessions page, copyable names, AI list organizer, links for typed songs, Cyrillic matching — v0.24.0
+
+**Released as v0.24.0.**
+
+**What/why.** The owner pastes whole song lists (often Russian) into the
+import and asked for: names that can be selected and copied, AI help when the
+list is badly laid out, several named imports to swap between, YouTube Music
+links for typed songs, and a fix for wrong songs showing as "Matched".
+
+**How.**
+- *Matching.* `normalizeForMatch` kept only a-z0-9, which deleted Cyrillic:
+  "Anna Asti — Царица" became "anna asti" and matched any of their tracks at
+  100%, and all-Cyrillic names were never found. It now keeps every script's
+  letters, and folds dotted initials ("D.J." = "DJ") and `$` as S. A typed
+  "Artist - Title" has no metadata artist, so the wrong-title/wrong-artist
+  checks skipped it; `judgeSplit` applies them, letting the file's own tags
+  decide which side is the artist.
+- *Sessions.* The page opens on `ImportSessionsLanding` (new / open / rename /
+  delete); open imports are tabs. `lib/ytSessions.ts` holds the payload and
+  `openSessions`, module state that outlives the page. Sessions made here have
+  their own key; `contentKey` in the payload still finds earlier decisions for
+  the same list. A fetch writes to its session's row first and to the screen
+  only if that session is still shown. Autosave never runs while a fetch owns
+  the row. New Rust: `rename_import_session`, facts in `list_import_sessions`.
+- *Copy.* Names are `select-text` (the body is `user-select: none`); rows have
+  a checkbox (Shift = range), Ctrl+C, Copy Names / Links / Names + Links.
+  `dragstart` is cancelled on the lists because of the native-drag freeze.
+- *Organize with AI.* `lib/ytListAI.ts` (chunking, prompt, tolerant parse) and
+  `OrganizeListDialog`. `checkOrganized` shows what the AI left out or made
+  up; `repairLinks` drops invented links and restores lost ones.
+- *Links.* `find_ytmusic_link` searches YouTube Music's Songs section and reads
+  the result's real title/artist; `linkLooksRight` marks doubtful ones "Check".
+
+**Verification.** Vitest + Rust suites pass. Matcher run on the owner's real
+4,263-track index: the reported rows match the right files and the saved
+70-track wedding playlist is unchanged. Organizer run through the real Claude
+CLI on a deliberately messy list; link search run through real yt-dlp. Page
+driven in a browser with Tauri mocked (swap / leave the page during a fetch,
+rename, drafts, copy). Not yet tried in the installed app.
+
 ## Roadmap — v1.0
 
 v0.6 through v0.9 are complete (items 1–37). Everything below is v1.0 —

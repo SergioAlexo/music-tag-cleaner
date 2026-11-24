@@ -2791,6 +2791,7 @@ This rewrites the ${meta.singular} tag on ${
               libraryGenres={libraryIndex.genres}
               settings={settings}
               notify={notify}
+              generate={(prompt) => ai.generateText(prompt, settings, settings.ollamaModel)}
               indexing={libraryIndex.indexing}
               lastIndexedAt={libraryIndex.stats?.lastIndexedAt ?? null}
               onIndexNow={() => void libraryIndex.runIndex(false)}

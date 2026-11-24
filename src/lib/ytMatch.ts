@@ -63,14 +63,29 @@ function stripTitleNoise(title: string): string {
   return cleaned.replace(/\s+/g, " ").trim();
 }
 
-/** Folds a string down for comparison: diacritics stripped (the same NFKD
+/**
+ * Folds a string down for comparison: diacritics stripped (the same NFKD
  * approach the filename sanitizers use), lowercased, punctuation collapsed
- * to spaces, whitespace normalized. */
+ * to spaces, whitespace normalized.
+ *
+ * Letters of *every* script are kept. This used to keep only a-z and 0-9,
+ * which deleted Cyrillic outright: "Anna Asti — Царица" became "anna asti"
+ * and matched any Anna Asti track at 100%, while an all-Cyrillic name became
+ * the empty string and was never found at all.
+ *
+ * Two stylings are folded because token comparison can't see through them:
+ * dotted initials ("D.J. Smash" = "DJ Smash", "R.E.M." = "REM") and a dollar
+ * sign used as an S ("GAYAZOV$ BROTHER$", "A$AP").
+ */
 export function normalizeForMatch(value: string): string {
-  const folded = value.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase();
-  return folded
+  return value
+    .normalize("NFKD")
+    .replace(/\p{M}+/gu, "")
+    .toLowerCase()
+    .replace(/(?<![\p{L}\p{N}])\p{L}(?:\.\p{L})+(?![\p{L}\p{N}])/gu, (m) => m.replace(/\./g, ""))
+    .replace(/(?<=\p{L})\$/gu, "s")
     .replace(/\bfeat\.?\b|\bft\.?\b/g, " ")
-    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
 }
 
@@ -189,13 +204,16 @@ export interface Prepared {
   chars: Int32Array;
 }
 
-/** `normalizeForMatch` output is only ever a-z, 0-9 and single spaces. */
-const ALPHABET = 37;
+/** a-z, 0-9, space, then 32 shared buckets for every other script. Characters
+ * sharing a bucket only make the histogram bound looser, never wrong; 32 gives
+ * each letter of the basic Cyrillic alphabet its own. */
+const ALPHABET = 69;
 
 function charBucket(code: number): number {
   if (code >= 97 && code <= 122) return code - 97; // a-z
   if (code >= 48 && code <= 57) return 26 + code - 48; // 0-9
-  return 36; // space
+  if (code === 32) return 36;
+  return 37 + (code & 31);
 }
 
 export function prepare(value: string): Prepared {
@@ -312,6 +330,7 @@ const VERSION_WORDS = new Set([
   "vip", "bootleg", "live", "acoustic", "remaster", "remastered", "version",
   "original", "rework", "flip", "mashup", "reprise", "cover", "demo", "rmx",
   "cut", "bonus", "unplugged", "intro", "outro",
+  "ремикс", "кавер", "версия",
 ]);
 
 /** Version words so common they say nothing about *which* version this is —
@@ -319,7 +338,7 @@ const VERSION_WORDS = new Set([
  * make two titles look like different mixes on their own. */
 const GENERIC_VERSION_WORDS = new Set([
   "original", "mix", "version", "audio", "edit", "radio", "single", "album",
-  "master", "remaster", "remastered", "hd", "hq", "full", "official",
+  "master", "remaster", "remastered", "hd", "hq", "full", "official", "версия",
 ]);
 
 /**
@@ -477,6 +496,10 @@ export interface WantedEntry {
   rawP: Prepared;
   titleP: Prepared;
   artistP: Prepared;
+  /** The two sides of an "Artist - Title" line that has no metadata artist,
+   * or null. Which side is the artist is never assumed: it is only acted on
+   * where a library file's own tags say so (see `judgeSplit`). */
+  split: { left: Prepared; right: Prepared } | null;
 }
 
 export function buildWanted(entry: PlaylistEntry): WantedEntry {
@@ -495,6 +518,8 @@ export function buildWanted(entry: PlaylistEntry): WantedEntry {
   // never shown or treated as a confirmed artist — see the module doc.
   const split = splitArtistTitle(entry.title);
   const matchTitle = stripFeaturing(split.title) || split.title;
+  // "Levels - Radio Edit" is a title and a version, not an artist and a title.
+  const rightIsVersion = tokens(matchTitle).every((w) => VERSION_WORDS.has(w) || GENERIC_VERSION_WORDS.has(w));
   return {
     artist,
     title,
@@ -507,6 +532,10 @@ export function buildWanted(entry: PlaylistEntry): WantedEntry {
     rawP,
     titleP: prepare(matchTitle),
     artistP: prepare(artist ?? ""),
+    split:
+      !artist && split.artist && !rightIsVersion
+        ? { left: prepare(split.artist), right: prepare(matchTitle) }
+        : null,
   };
 }
 
@@ -588,6 +617,41 @@ function artistAgreement(a: Prepared, b: Prepared): number {
   return contained > sim ? contained : sim;
 }
 
+/** Below this two names count as plainly different. */
+const DISAGREE = 0.5;
+/** From this up, a side of a split line is taken to be the file's artist. */
+const SAME_ARTIST = 0.8;
+
+/**
+ * What an "Artist - Title" line without metadata says about one library file.
+ * The file's tags decide which side is the artist ("Title - Artist" lists are
+ * common), so nothing is guessed:
+ *
+ * - a side that is the file's artist makes the other side the title, and
+ *   `ceiling` caps the score when that title is plainly another song;
+ * - when neither side is the artist at all, `artistDisagrees`.
+ */
+function judgeSplit(
+  split: { left: Prepared; right: Prepared },
+  id: TrackIdentity,
+): { ceiling: number; artistDisagrees: boolean } {
+  let ceiling: number | null = null;
+  let bestArtist = 0;
+  for (const [artist, title] of [
+    [split.left, split.right],
+    [split.right, split.left],
+  ]) {
+    const a = artistAgreement(artist, id.artistP);
+    if (a > bestArtist) bestArtist = a;
+    if (a < SAME_ARTIST) continue;
+    const t = artistAgreement(title, id.titleP);
+    const c = t < DISAGREE ? t * 0.62 + a * 0.38 : 1;
+    // A self-titled song fits both ways round: the kinder reading stands.
+    if (ceiling === null || c > ceiling) ceiling = c;
+  }
+  return { ceiling: ceiling ?? 1, artistDisagrees: bestArtist < DISAGREE };
+}
+
 /**
  * `minScore` is the lowest final score the caller would still keep. Every
  * text comparison can be capped by it, because the only things that lift a
@@ -622,7 +686,7 @@ function scoreIdentity(want: WantedEntry, id: TrackIdentity, minScore = 0): Matc
 
   // When both sides actually have structured artist/title, score those
   // fields against each other too — far more precise than one flat string.
-  const titleScore = id.title ? preparedTextSimilarity(want.titleP, id.titleP, floor) : 0;
+  const titleScore = id.titleP.len ? preparedTextSimilarity(want.titleP, id.titleP, floor) : 0;
   const artistScore =
     want.artist && id.artist ? preparedTextSimilarity(want.artistP, id.artistP, floor) : 0;
   if (want.artist && id.artist && id.title) {
@@ -645,7 +709,7 @@ function scoreIdentity(want: WantedEntry, id: TrackIdentity, minScore = 0): Matc
   // Slightly discounted, because a title alone is genuinely weaker evidence
   // than a title plus a confirmed artist: where both fit, the one that also
   // agrees on the artist should still win the greedy assignment.
-  if (!want.artist && id.title) {
+  if (!want.artist && id.titleP.len) {
     let titleOnly = preparedTextSimilarity(want.rawP, id.titleP, floor);
     if (want.titleP !== want.rawP) {
       // The featuring-stripped form, so guests in the video title don't count against it.
@@ -685,6 +749,16 @@ function scoreIdentity(want: WantedEntry, id: TrackIdentity, minScore = 0): Matc
       const ceiling = titleAgree * 0.62 + artistAgreement(want.artistP, id.artistP) * 0.38;
       if (best > ceiling) best = ceiling;
     }
+  }
+
+  // The same two checks for a line with no metadata artist (a typed "Artist -
+  // Title", or a video title): without them a same-titled song by someone
+  // else auto-accepted at 98%, and a same-artist song could pass on the
+  // artist's name alone.
+  if (want.split && id.artistP.len && id.titleP.len) {
+    const { ceiling, artistDisagrees } = judgeSplit(want.split, id);
+    if (artistDisagrees) best *= ARTIST_MISMATCH_FACTOR;
+    if (best > ceiling) best = ceiling;
   }
 
   const delta =

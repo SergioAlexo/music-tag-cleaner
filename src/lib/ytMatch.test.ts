@@ -5,6 +5,7 @@ import {
   buildWanted,
   CONFIDENT_THRESHOLD,
   matchPlaylist,
+  normalizeForMatch,
   parseSearchableBackup,
   prepare,
   preparedTextSimilarity,
@@ -436,5 +437,59 @@ describe("matchPlaylist", () => {
     };
     const [m] = matchPlaylist([entry(0, "Boris Brejcha - Gravity", 402)], [a, b], tags);
     expect(m.candidates.length).toBeGreaterThan(1);
+  });
+});
+
+// Both from the owner's real library: normalizing to a-z0-9 deleted Cyrillic,
+// so a typed row matched on whatever Latin letters were left.
+describe("non-Latin names", () => {
+  const collection: [string, string][] = [
+    ["Anna Asti", "Ночью На Кухне"],
+    ["Anna Asti", "Топит"],
+    ["Anna Asti", "Царица"],
+    ["Dj Smash", "Волна"],
+    ["Nivesta", "Позвони"],
+    ["Дора", "Втюрилась"],
+    ["Дмитрий Маликов", "Ты Одна Ты Такая"],
+    ["Филипп Киркоров", "Цвет Настроения Синий"],
+  ];
+  const files = collection.map(([a, t]) => file(`C:/m/${a} - ${t}.mp3`));
+  const tags = Object.fromEntries(collection.map(([artist, title], i) => [files[i].path, tag({ artist, title })]));
+  const run = (...titles: string[]) =>
+    matchPlaylist(titles.map((t, i) => ({ ...entry(i, t), source: "text" as const })), files, tags).map((m) =>
+      m.status === "matched" ? tags[m.candidates[0].path].title : m.status,
+    );
+
+  it("finds the named song, not another one by the same artist", () => {
+    expect(
+      run("Anna Asti — Царица", "D.J. Smash & Nivesta — Позвони", "Дора — Втюрилась", "Дмитрий Маликов — Ты одна, ты такая"),
+    ).toEqual(["Царица", "Позвони", "Втюрилась", "Ты Одна Ты Такая"]);
+  });
+
+  it("reads Title - Artist order too", () => {
+    expect(run("Царица - Anna Asti")).toEqual(["Царица"]);
+  });
+
+  it("leaves a song the library doesn't have missing", () => {
+    expect(run("Киркоров — Роза чайная", "Anna Asti — Феникс")).toEqual(["missing", "missing"]);
+  });
+
+  it("folds dotted initials and a dollar sign used as an S", () => {
+    expect(normalizeForMatch("D.J. Smash")).toBe(normalizeForMatch("DJ Smash"));
+    expect(normalizeForMatch("GAYAZOV$ BROTHER$")).toBe("gayazovs brothers");
+    expect(normalizeForMatch("Mr. Brightside")).toBe("mr brightside");
+  });
+});
+
+describe("a typed Artist - Title line", () => {
+  const files = [file("C:/m/a.mp3"), file("C:/m/b.mp3")];
+  const tags = {
+    "C:/m/a.mp3": tag({ artist: "Some Cover Band", title: "Disturbia" }),
+    "C:/m/b.mp3": tag({ artist: "Rihanna", title: "Umbrella" }),
+  };
+  it("asks instead of accepting the same title by someone else", () => {
+    const [m] = matchPlaylist([{ ...entry(0, "Rihanna - Disturbia"), source: "text" }], files, tags);
+    expect(m.status).toBe("ambiguous");
+    expect(m.candidates[0].path).toBe("C:/m/a.mp3");
   });
 });
